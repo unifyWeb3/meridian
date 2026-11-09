@@ -110,8 +110,9 @@ hermes meridian ledger verify     # re-verify the evidence chain
    with a `file:line` anchor; unguarded non-constructor writes are warnings
    (violations with `--strict`); constructor writes are checked against the
    spec's `initial` in strict mode. `deny` always wins over `allow`. A spec
-   that covers nothing, or a discovered machine outside the spec, fails the
-   check — no false greens.
+   that covers nothing, or a discovered (non-enum-only) machine outside the
+   spec, fails the check — no false greens. Enum-only machines are exempt
+   from the uncovered gate because they carry no edges to enforce.
 3. **Audit (hash-chained).** Every scan, verdict, spec acceptance, check and
    repair is an entry in `$HERMES_HOME/plugin-data/meridian/ledger.jsonl`, each
    entry committing to the previous entry's SHA-256. `meridian_ledger verify`

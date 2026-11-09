@@ -20,8 +20,8 @@ beyond the lines marked.
 | 0:20 | Agent calls `meridian_verify` → deny on `draft → refunded` + dead branch | "Two findings: an unreachable state… and a refund path that money never touched." |
 | 0:30 | Switch to file view: `refund()` contains `OrderStatus.DRAFT` in the tuple | "Line 78. The guard list had DRAFT in it. That's the bug — nobody can see it by reading code." |
 | 0:40 | Agent calls `meridian_spec check` → FAILS with `orders.py:78 draft → refunded [deny]` | "The spec — which the human reviewed — makes it a hard stop." |
-| 0:50 | Apply the fix (remove `OrderStatus.DRAFT` from the tuple), save | "One token deleted." |
-| 0:55 | Re-run `hermes meridian check` → OK, exit 0 (or agent `meridian_verify` → ok) | "Green. That check now runs in CI." |
+| 0:50 | Fix one: delete `OrderStatus.DRAFT` from the refund tuple → re-run check → still red: `orders.py:62 unverified_shipping → shipped [not-allowed]` | "One finding down. Meridian doesn't rubber-stamp a half-fix." |
+| 0:55 | Fix two: delete the dead `UNVERIFIED_SHIPPING` branch in `ship()` → `hermes meridian check` → OK, exit 0 | "Green. That check now runs in CI." |
 | 1:05 | `hermes meridian ledger verify` → "OK — N entries" | "Every verdict, chained. Nobody edits it quietly." |
 | 1:15 | Show Mermaid diagram output (`meridian_diagram Order.status`) for one second | "Also: diagrams you can paste in docs." |
 | 1:22 | End card: name + tagline + "Zero deps. Zero network. Open source." | "Meridian. The machines your codebase already has — finally on the record." |
