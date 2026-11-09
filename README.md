@@ -46,10 +46,12 @@ meridian check FAILED - 2 violation(s):
 Scan shows the whole machine:
 
 ```
-$ hermes meridian scan .
+$ hermes meridian scan --root examples/demo-order-pipeline
 meridian scan - 1 files, 4 machine(s), 2ms
-  Order.status           conf=medium states=11 transitions=15
-  Order.payment_status   conf=medium states=4 transitions=3
+  Order.status                     conf=medium states=11 transitions=15
+  Order.payment_status             conf=medium states=4 transitions=3
+  enum:OrderStatus                 conf=medium states=11 transitions=0
+  enum:PaymentStatus               conf=medium states=4 transitions=0
 ```
 
 Unreachable and dead states, unguarded writes, and spec violations all come
@@ -87,7 +89,7 @@ nothing to enforce, which is correct behavior, not a bug.
 
 ```bash
 hermes plugins install unifyWeb3/meridian --enable   # or from the catalog
-hermes meridian scan .
+hermes meridian scan
 hermes meridian check --strict        # exit 1 on violations; wire into CI
 hermes meridian report --out .meridian/report.md
 hermes meridian ledger verify
