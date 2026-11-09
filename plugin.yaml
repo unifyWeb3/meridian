@@ -1,0 +1,29 @@
+name: meridian
+version: 1.0.0
+manifest_version: 2
+api_version: 1
+description: "Finds and verifies the implicit state machines hidden in your codebase. The agent proposes; a deterministic analyzer proves every state and transition against real source (file:line anchors); a hash-chained evidence ledger audits every verdict. Unreachable states, dead states, unguarded writes and spec-forbidden transitions — caught before they ship. No model calls, no network, no dependencies beyond the standard library."
+author: unifyWeb3
+license: MIT
+homepage: https://github.com/unifyWeb3/meridian
+tags: [verification, devtools, state-machines, code-quality, audit]
+provides_tools:
+  - meridian_scan
+  - meridian_verify
+  - meridian_diagram
+  - meridian_spec
+  - meridian_ledger
+  - meridian_report
+provides_hooks:
+  - post_tool_call
+  - pre_llm_call
+requires_hermes: ">=0.22.0"
+config_schema:
+  auto_verify:
+    type: bool
+    default: true
+    description: "After the agent writes to state-machine files, re-scan the repo and surface spec violations in the next turn. Advisory only; never blocks a call."
+  strict:
+    type: bool
+    default: false
+    description: "Treat unguarded writes as violations in meridian_spec check instead of warnings."

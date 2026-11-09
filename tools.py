@@ -1,0 +1,388 @@
+"""Tool handlers for Meridian. Every handler returns a JSON string and
+never raises; analyzer failures come back as `{"ok": false, "error": ...}`.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from .analyzer import graph, ledger, repo as repo_mod
+from .analyzer.model import cap_list, dumps
+from .analyzer.scan import scan_root
+from .analyzer.spec import SpecError, draft_spec, load_spec, write_spec
+
+
+def _tool_root(args: dict) -> Path:
+    raw = (args or {}).get("root") or os.environ.get("MERIDIAN_ROOT") or ""
+    if raw:
+        path = Path(raw).expanduser()
+    else:
+        path = Path(os.getcwd())
+    return path.resolve()
+
+
+def _err(message: str, **extra: Any) -> str:
+    return json.dumps({"ok": False, "error": message, **extra})
+
+
+def _ok(payload: dict[str, Any]) -> str:
+    payload = {"ok": True, **payload}
+    return dumps(payload)
+
+
+def _scan_payload(result, *, full: bool) -> dict[str, Any]:
+    machines = []
+    for machine in result.machines:
+        verdict = graph.analyze_machine(machine)
+        base = {
+            "id": machine.id,
+            "owner": machine.owner,
+            "language": machine.language,
+            "confidence": machine.confidence,
+            "states": machine.states,
+            "initial": machine.initial,
+            "transitions": len(machine.transitions),
+            "reachable": len(verdict.reachable),
+            "unreachable": verdict.unreachable,
+            "dead": verdict.dead,
+            "terminal": verdict.terminal,
+            "notes": machine.notes,
+            "sources": machine.sources,
+        }
+        if full:
+            transitions, extra = cap_list([t.to_dict() for t in machine.transitions], 40)
+            base["transitions_detail"] = transitions
+            if extra:
+                base["transitions_truncated"] = extra
+        machines.append(base)
+    return {
+        "root": result.root,
+        "files_scanned": result.files_scanned,
+        "files_skipped": result.files_skipped,
+        "elapsed_ms": result.elapsed_ms,
+        "warnings": result.warnings,
+        "machine_count": len(machines),
+        "machines": machines,
+    }
+
+
+def _ledger_event(event: str, data: dict) -> None:
+    try:
+        ledger.append(event, data)
+    except Exception:
+        # the ledger must never take the tool down; the caller still gets
+        # the analysis, and `meridian_ledger verify` surfaces the break.
+        pass
+
+
+# ---------------------------------------------------------------- scan
+def meridian_scan(args: dict, **kwargs: Any) -> str:
+    try:
+        root = _tool_root(args)
+        result = scan_root(root)
+        payload = _scan_payload(result, full=len(result.machines) <= 12)
+        _ledger_event("scan", {
+            "root": result.root, "files": result.files_scanned,
+            "machines": [m.id for m in result.machines],
+        })
+        return _ok({"scan": payload, "hint": "Run meridian_verify for edge-level verdicts, meridian_spec draft to start enforcement, meridian_diagram for a picture."})
+    except Exception as exc:  # total containment
+        return _err(f"scan failed: {exc}")
+
+
+# -------------------------------------------------------------- verify
+def _verify_all(root: Path, *, machine_id: str | None, strict: bool) -> dict:
+    result = scan_root(root)
+    spec_path = repo_mod.find_spec(root)
+    spec = load_spec(spec_path) if spec_path else None
+    machines = result.machines
+    if machine_id:
+        machines = [m for m in machines if m.id == machine_id]
+        if not machines:
+            return {"error": f"machine not found: {machine_id}",
+                    "known": [m.id for m in result.machines][:30]}
+    verdicts = []
+    all_violations = []
+    for machine in machines:
+        spec_machine = spec.machine(machine.id) if spec else None
+        verdict = graph.analyze_machine(machine, spec_machine, strict=strict)
+        transitions, extra = cap_list([t.to_dict() for t in machine.transitions], 40)
+        verdict_dict = verdict.to_dict()
+        verdict_dict["confidence"] = machine.confidence
+        verdict_dict["states"] = machine.states
+        verdict_dict["initial"] = machine.initial
+        verdict_dict["transitions"] = transitions
+        if extra:
+            verdict_dict["transitions_truncated"] = extra
+        verdicts.append(verdict_dict)
+        all_violations.extend(verdict.to_dict()["violations"])
+    unspecced = []
+    unfound = []
+    if spec:
+        found_ids = {m.id for m in result.machines}
+        unspecced = sorted(found_ids - spec.ids())
+        unfound = sorted(spec.ids() - found_ids)
+    return {
+        "root": result.root,
+        "spec": str(spec_path) if spec_path else None,
+        "spec_version": spec.version if spec else None,
+        "strict": strict,
+        "ok": not all_violations,
+        "violation_count": len(all_violations),
+        "violations": all_violations,
+        "unspecced_machines": unspecced,
+        "spec_machines_not_found": unfound,
+        "verdicts": verdicts,
+        "files_scanned": result.files_scanned,
+        "elapsed_ms": result.elapsed_ms,
+    }
+
+
+def meridian_verify(args: dict, **kwargs: Any) -> str:
+    try:
+        root = _tool_root(args)
+        machine_id = (args or {}).get("machine_id") or None
+        strict = bool((args or {}).get("strict", False))
+        payload = _verify_all(root, machine_id=machine_id, strict=strict)
+        if "error" in payload:
+            return _err(payload["error"], known=payload.get("known", []))
+        _ledger_event("verify", {
+            "root": payload["root"],
+            "machine_id": machine_id,
+            "spec": bool(payload["spec"]),
+            "violation_count": payload["violation_count"],
+            "ok": payload["ok"],
+        })
+        return _ok(payload)
+    except SpecError as exc:
+        return _err(f"spec error: {exc}")
+    except Exception as exc:
+        return _err(f"verify failed: {exc}")
+
+
+# ------------------------------------------------------------- diagram
+def _xstate_id(raw: str) -> str:
+    cleaned = "".join(c if c.isalnum() else "_" for c in raw)
+    return cleaned.strip("_") or "machine"
+
+
+def _mermaid(machine) -> str:
+    lines = ["stateDiagram-v2"]
+    for initial in machine.initial:
+        lines.append(f"    [*] --> {initial}")
+    for t in machine.transitions:
+        if t.src:
+            label = (t.via or "write").replace('"', "'")
+            lines.append(f"    {t.src} --> {t.dst} : {label}")
+    for state in machine.states:
+        if state not in {t.dst for t in machine.transitions} and state not in machine.initial:
+            lines.append(f"    note right of {state}: never assigned (dead)")
+    return "\n".join(lines)
+
+
+def _xstate(machine) -> dict:
+    states: dict[str, Any] = {}
+    incoming: dict[str, list[tuple[str, str]]] = {}
+    for t in machine.transitions:
+        if t.src:
+            incoming.setdefault(t.src, []).append((t.dst, t.via))
+    for state in machine.states:
+        node: dict[str, Any] = {}
+        edges = incoming.get(state, [])
+        if edges:
+            on: dict[str, Any] = {}
+            used: set[str] = set()
+            for dst, via in edges:
+                event = f"TO_{dst.upper()}"
+                count = 2
+                candidate = event
+                while candidate in used:  # disambiguate same-target edges
+                    candidate = f"{event}_{count}"
+                    count += 1
+                used.add(candidate)
+                on[candidate] = {"target": dst, "description": f"via {via}()"}
+            node["on"] = on
+        states[state] = node
+    initial = machine.initial[0] if machine.initial else (machine.states[0] if machine.states else None)
+    machine_json: dict[str, Any] = {
+        "id": _xstate_id(machine.id),
+        "states": states,
+        "x_meridian": {
+            "note": "Event names are generated placeholders; wire your own events before using this in production.",
+            "source_machine": machine.id,
+            "evidence": [t.anchor() for t in machine.transitions],
+        },
+    }
+    if initial:
+        machine_json["initial"] = initial
+    return machine_json
+
+
+def meridian_diagram(args: dict, **kwargs: Any) -> str:
+    try:
+        root = _tool_root(args)
+        machine_id = (args or {}).get("machine_id")
+        fmt = (args or {}).get("format") or "mermaid"
+        if not machine_id:
+            return _err("machine_id is required", hint="call meridian_scan first to list ids")
+        if fmt not in ("mermaid", "xstate"):
+            return _err("format must be 'mermaid' or 'xstate'")
+        result = scan_root(root)
+        machine = next((m for m in result.machines if m.id == machine_id), None)
+        if machine is None:
+            return _err(f"machine not found: {machine_id}", known=[m.id for m in result.machines][:30])
+        _ledger_event("diagram", {"root": result.root, "machine_id": machine_id, "format": fmt})
+        if fmt == "mermaid":
+            return _ok({"format": "mermaid", "machine_id": machine_id, "diagram": _mermaid(machine)})
+        return _ok({"format": "xstate", "machine_id": machine_id, "machine": _xstate(machine)})
+    except Exception as exc:
+        return _err(f"diagram failed: {exc}")
+
+
+# ---------------------------------------------------------------- spec
+def meridian_spec(args: dict, **kwargs: Any) -> str:
+    try:
+        args = args or {}
+        root = _tool_root(args)
+        action = args.get("action")
+        if action not in ("draft", "accept", "show", "check"):
+            return _err("action must be one of: draft, accept, show, check")
+        if action in ("draft", "accept"):
+            result = scan_root(root)
+            content = draft_spec(result.machines)
+            if action == "draft":
+                _ledger_event("spec_draft", {"root": result.root, "machines": len(result.machines)})
+                return _ok({"spec_yaml": content, "machines": len(result.machines),
+                            "note": "Review every edge, then 'accept' to enforce."})
+            force = bool(args.get("force", False))
+            try:
+                path = write_spec(root, content, force=force)
+            except SpecError as exc:
+                return _err(str(exc))
+            _ledger_event("spec_accept", {"root": str(root), "path": str(path),
+                                          "machines": len(result.machines)})
+            return _ok({"written": str(path), "machines": len(result.machines),
+                        "note": "Spec accepted. `hermes meridian check` (or meridian_spec check) now enforces it."})
+        spec_path = repo_mod.find_spec(root)
+        if action == "show":
+            if not spec_path:
+                return _err(f"no .meridian.yaml found at or above {root}")
+            return _ok({"path": str(spec_path), "content": spec_path.read_text(encoding="utf-8")})
+        # check
+        if not spec_path:
+            return _err(f"no .meridian.yaml at or above {root}", hint="run action=draft first")
+        strict = bool(args.get("strict", False))
+        payload = _verify_all(root, machine_id=None, strict=strict)
+        _ledger_event("check", {"root": payload["root"], "spec": payload["spec"],
+                                "violation_count": payload["violation_count"], "ok": payload["ok"]})
+        return _ok({"check": payload})
+    except SpecError as exc:
+        return _err(f"spec error: {exc}")
+    except Exception as exc:
+        return _err(f"spec {args.get('action') if args else '?'} failed: {exc}")
+
+
+# -------------------------------------------------------------- ledger
+def meridian_ledger(args: dict, **kwargs: Any) -> str:
+    try:
+        args = args or {}
+        action = args.get("action")
+        if action == "show":
+            limit = max(1, min(int(args.get("limit", 10)), 100))
+            entries = ledger.read_entries()[-limit:]
+            return _ok({"entries": entries, "total": len(ledger.read_entries())})
+        if action == "verify":
+            return _ok(ledger.verify())
+        if action == "stats":
+            return _ok(ledger.stats())
+        return _err("action must be one of: show, verify, stats")
+    except Exception as exc:
+        return _err(f"ledger failed: {exc}")
+
+
+# -------------------------------------------------------------- report
+def _report_markdown(root: Path, payload: dict) -> str:
+    lines = [
+        "# Meridian Report",
+        "",
+        f"- Repository: `{root}`",
+        f"- Files scanned: {payload.get('files_scanned', 0)}",
+        f"- Machines found: {len(payload.get('verdicts', []))}",
+        f"- Spec: {payload.get('spec') or 'none (discovery only)'}",
+        f"- Outcome: {'PASS' if payload.get('ok') else 'FAIL'} — {payload.get('violation_count', 0)} violation(s)",
+        "",
+        "## Machines",
+        "",
+        "| Machine | Confidence | States | Unreachable | Dead | Violations |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for verdict in payload.get("verdicts", []):
+        lines.append(
+            f"| `{verdict['machine_id']}` | {verdict.get('confidence', '?')} "
+            f"| {len(verdict.get('states', []))} "
+            f"| {', '.join(verdict.get('unreachable', [])) or '—'} "
+            f"| {', '.join(verdict.get('dead', [])) or '—'} "
+            f"| {len(verdict.get('violations', []))} |"
+        )
+    for verdict in payload.get("verdicts", []):
+        lines += ["", f"## `{verdict['machine_id']}`", ""]
+        lines.append(f"- States: {', '.join(verdict.get('states', [])) or '—'}")
+        lines.append(f"- Initial: {', '.join(verdict.get('initial', [])) or 'not discovered'}")
+        lines.append(f"- Reachable: {', '.join(verdict.get('reachable', [])) or '—'}")
+        if verdict.get("unreachable"):
+            lines.append(f"- **Unreachable states:** {', '.join(verdict['unreachable'])}")
+        if verdict.get("dead"):
+            lines.append(f"- **Dead states (never assigned):** {', '.join(verdict['dead'])}")
+        if verdict.get("terminal"):
+            lines.append(f"- Terminal states: {', '.join(verdict['terminal'])}")
+        lines += ["", "Transitions:", ""]
+        for t in verdict.get("transitions", []):
+            src = t["src"] if t["src"] else "*"
+            guard = "guarded" if t["guarded"] else "UNGUARDED"
+            lines.append(f"- `{src}` → `{t['dst']}` via `{t['via']}()` — {t['file']}:{t['line']} ({guard})")
+        if verdict.get("violations"):
+            lines += ["", "**Violations:**", ""]
+            for v in verdict["violations"]:
+                lines.append(f"- `{v['anchor']}` — {v['detail']}")
+        for note in verdict.get("notes", []):
+            lines.append(f"- note: {note}")
+    head = ledger.verify()
+    lines += [
+        "",
+        "## Evidence ledger",
+        "",
+        f"- Entries: {head['entries']}",
+        f"- Chain valid: {'yes' if head['ok'] else 'NO — ' + '; '.join(head['problems'][:3])}",
+        f"- Head: `{head['head']}`",
+        "",
+        "_Generated by Meridian. Every path:line anchor above is anchored in source; nothing in this report is model-asserted._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def meridian_report(args: dict, **kwargs: Any) -> str:
+    try:
+        args = args or {}
+        root = _tool_root(args)
+        payload = _verify_all(root, machine_id=None, strict=False)
+        if "error" in payload:
+            return _err(payload["error"])
+        report = _report_markdown(root, payload)
+        out = args.get("out_file")
+        written = None
+        if out:
+            target = Path(out).expanduser()
+            if not target.is_absolute():
+                target = root / out
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(report, encoding="utf-8")
+            written = str(target)
+        _ledger_event("report", {"root": str(root), "machines": len(payload.get("verdicts", [])),
+                                 "out": written})
+        return _ok({"report_markdown": report, "written": written,
+                    "violation_count": payload.get("violation_count", 0)})
+    except Exception as exc:
+        return _err(f"report failed: {exc}")

@@ -1,0 +1,29 @@
+version: 1
+# Accepted for the Meridian demo. Review the deny edge: a refund
+# before any money moved is never legal, so draft -> refunded is forbidden.
+machines:
+  - id: Order.status
+    states: [cancelled, delivered, draft, packed, paid, refunded, returned, shipped, submitted, unverified_shipping, warehouse_hold]
+    initial: [draft]
+    allow:
+      - [draft, submitted]
+      - [draft, cancelled]
+      - [submitted, paid]
+      - [submitted, cancelled]
+      - [paid, packed]
+      - [paid, refunded]
+      - [packed, shipped]
+      - [shipped, delivered]
+      - [delivered, returned]
+      - [delivered, refunded]
+      - [returned, refunded]
+    deny:
+      - [draft, refunded]
+  - id: Order.payment_status
+    states: [failed, pending, refunded, succeeded]
+    initial: [pending]
+    allow:
+      - [pending, succeeded]
+      - [pending, failed]
+      - [failed, succeeded]
+    deny: []

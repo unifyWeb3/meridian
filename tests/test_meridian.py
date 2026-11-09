@@ -1,0 +1,256 @@
+"""Meridian tests — stdlib unittest only (the plugin itself has zero deps).
+
+Run:  python3 -m unittest discover -s tests -v
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO.parent))
+
+from meridian.analyzer import graph, ledger, spec as spec_mod  # noqa: E402
+from meridian.analyzer.scan import scan_root  # noqa: E402
+from meridian.analyzer.spec import SpecError, draft_spec, load_spec, _mini_yaml  # noqa: E402
+
+DEMO = REPO / "examples" / "demo-order-pipeline"
+
+
+class TempRepoTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="meridian-test-"))
+        self._old_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(self.tmp / "hermes-home")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        if self._old_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = self._old_home
+
+    def write(self, rel: str, content: str) -> Path:
+        target = self.tmp / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(textwrap.dedent(content), encoding="utf-8")
+        return target
+
+
+class ScanTests(TempRepoTest):
+    def test_enum_and_class_machine_discovered(self):
+        self.write("orders.py", """
+        from enum import Enum
+        class OrderStatus(str, Enum):
+            DRAFT = "draft"
+            SUBMITTED = "submitted"
+            PAID = "paid"
+        class Order:
+            def __init__(self):
+                self.status = OrderStatus.DRAFT
+            def pay(self):
+                if self.status == OrderStatus.SUBMITTED:
+                    self.status = OrderStatus.PAID
+        """)
+        result = scan_root(self.tmp)
+        by_id = {m.id: m for m in result.machines}
+        self.assertIn("Order.status", by_id)
+        machine = by_id["Order.status"]
+        self.assertIn("draft", machine.states)
+        self.assertIn("paid", machine.states)
+        self.assertEqual(machine.initial, ["draft"])
+        edges = {(t.src, t.dst) for t in machine.transitions}
+        self.assertIn(("submitted", "paid"), edges)
+
+    def test_guard_resolution_and_unguarded_write(self):
+        self.write("m.py", """
+        class T:
+            def __init__(self):
+                self.state = "idle"
+            def work(self):
+                if self.state == "idle":
+                    self.state = "busy"
+            def admin(self):
+                self.state = "done"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "T.state")
+        guarded = [t for t in machine.transitions if t.guarded]
+        unguarded = [t for t in machine.transitions if not t.guarded and t.kind == "write"]
+        self.assertIn(("idle", "busy"), {(t.src, t.dst) for t in guarded})
+        self.assertIn(("done",), {(t.dst,) for t in unguarded})
+
+    def test_node_modules_and_syntax_errors_skipped(self):
+        self.write("node_modules/pkg/index.py", "class X:\n    def __init__(self):\n        self.status = 'running'\n")
+        self.write("broken.py", "def (:\n")
+        result = scan_root(self.tmp)
+        self.assertEqual(len(result.machines), 0)
+        self.assertTrue(any("broken.py" in w for w in result.warnings))
+
+    def test_demo_repo_finds_expected_machines(self):
+        result = scan_root(DEMO)
+        ids = {m.id for m in result.machines}
+        self.assertIn("Order.status", ids)
+        self.assertIn("Order.payment_status", ids)
+        order = next(m for m in result.machines if m.id == "Order.status")
+        self.assertTrue(set(order.states) >= {"draft", "submitted", "paid", "shipped", "refunded"})
+
+
+class GraphTests(TempRepoTest):
+    def test_unreachable_and_dead_and_terminal(self):
+        self.write("g.py", """
+        class O:
+            def __init__(self):
+                self.status = "draft"
+            def ship_dead_branch(self):
+                if self.status == "ghost":
+                    self.status = "shipped"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "O.status")
+        machine.states = sorted(set(machine.states) | {"ghost", "warehouse"})
+        verdict = graph.analyze_machine(machine)
+        self.assertIn("ghost", verdict.unreachable)
+        self.assertIn("warehouse", verdict.dead)
+        self.assertIn("draft", verdict.terminal)
+
+    def test_spec_deny_and_allow(self):
+        self.write("s.py", """
+        class O:
+            def __init__(self):
+                self.status = "draft"
+            def refund(self):
+                if self.status in ("paid", "returned", "draft"):
+                    self.status = "refunded"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "O.status")
+        spec = spec_mod.SpecMachine(id="O.status", states=machine.states,
+                                    initial=["draft"],
+                                    allow={("paid", "refunded"), ("returned", "refunded")},
+                                    deny={("draft", "refunded")})
+        verdict = graph.analyze_machine(machine, spec)
+        rules = {(v.src, v.dst, v.rule) for v in verdict.violations}
+        self.assertIn(("draft", "refunded", "deny"), rules)
+        self.assertFalse(verdict.ok)
+
+
+class SpecTests(TempRepoTest):
+    def test_draft_accept_roundtrip(self):
+        self.write("o.py", """
+        class O:
+            def __init__(self):
+                self.status = "draft"
+            def go(self):
+                if self.status == "draft":
+                    self.status = "done"
+        """)
+        result = scan_root(self.tmp)
+        text = draft_spec(result.machines)
+        path = self.tmp / ".meridian.yaml"
+        path.write_text(text, encoding="utf-8")
+        spec = load_spec(path)
+        self.assertIn("O.status", spec.ids())
+        machine = next(m for m in spec.machines if m.id == "O.status")
+        self.assertIn(("draft", "done"), machine.allow)
+
+    def test_mini_yaml_parser_matches_spec(self):
+        text = """version: 1
+machines:
+  - id: O.status
+    states: [draft, done]
+    initial: [draft]
+    allow:
+      - [draft, done]
+    deny:
+      - [done, draft]
+"""
+        spec = spec_mod._coerce_spec(_mini_yaml(text), Path("test.yaml"))
+        self.assertEqual(spec.version, 1)
+        machine = spec.machines[0]
+        self.assertEqual(machine.allow, {("draft", "done")})
+        self.assertEqual(machine.deny, {("done", "draft")})
+
+    def test_json_in_yaml_loader(self):
+        payload = {"version": 1,
+                   "machines": [{"id": "A.status", "states": ["x", "y"],
+                                 "initial": ["x"],
+                                 "allow": [["x", "y"]],
+                                 "deny": []}]}
+        path = self.tmp / "s.yaml"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        spec = load_spec(path)
+        self.assertEqual(spec.machines[0].allow, {("x", "y")})
+
+    def test_demo_spec_parses(self):
+        spec = load_spec(DEMO / ".meridian.yaml")
+        order = next(m for m in spec.machines if m.id == "Order.status")
+        self.assertIn(("draft", "refunded"), order.deny)
+
+    def test_demo_check_reports_seeded_violations(self):
+        result = scan_root(DEMO)
+        spec = load_spec(DEMO / ".meridian.yaml")
+        all_violations = []
+        for machine in result.machines:
+            verdict = graph.analyze_machine(machine, spec.machine(machine.id))
+            all_violations.extend(verdict.violations)
+        anchors = {(v.src, v.dst, v.rule) for v in all_violations}
+        self.assertIn(("draft", "refunded", "deny"), anchors)
+
+    def test_missing_spec_raises_clean_error(self):
+        with self.assertRaises(SpecError):
+            load_spec(self.tmp / "missing.yaml")
+
+
+class LedgerTests(TempRepoTest):
+    def test_append_and_verify(self):
+        ledger.append("scan", {"root": "/tmp/x", "files": 3, "machines": 1})
+        ledger.append("verify", {"violation_count": 0, "ok": True})
+        status = ledger.verify()
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["entries"], 2)
+
+    def test_tamper_breaks_chain(self):
+        ledger.append("scan", {"root": "/tmp/x"})
+        ledger.append("verify", {"ok": True})
+        path = ledger.ledger_path()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        entry = json.loads(lines[0])
+        entry["data"]["root"] = "/tmp/evil"
+        lines[0] = json.dumps(entry)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        status = ledger.verify()
+        self.assertFalse(status["ok"])
+        self.assertTrue(status["problems"])
+        with self.assertRaises(ledger.LedgerError):
+            ledger.append("scan", {"root": "/tmp/y"})
+
+
+class DiagramTests(TempRepoTest):
+    def test_mermaid_contains_edges(self):
+        from meridian.tools import _mermaid
+        self.write("d.py", """
+        class O:
+            def __init__(self):
+                self.status = "draft"
+            def go(self):
+                if self.status == "draft":
+                    self.status = "done"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "O.status")
+        diagram = _mermaid(machine)
+        self.assertIn("stateDiagram-v2", diagram)
+        self.assertIn("[*] --> draft", diagram)
+        self.assertIn("draft --> done", diagram)
+
+
+if __name__ == "__main__":
+    unittest.main()

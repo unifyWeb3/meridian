@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.meridian.yaml.bak
+.meridian/
+node_modules/
+.DS_Store
