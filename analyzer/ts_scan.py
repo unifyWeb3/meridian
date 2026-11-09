@@ -1,4 +1,4 @@
-"""TypeScript/JavaScript extraction — lexical and best-effort.
+"""TypeScript/JavaScript extraction - lexical and best-effort.
 
 This is deliberately not a compiler. String-literal union types give us
 exact state alphabets with high confidence. Everything else is anchored
@@ -43,7 +43,7 @@ def _line_of_text(text: str, index: list[int], pos: int) -> int:
 
 def _union_body(text: str, start: int) -> str:
     """The union's text: everything until a newline that does not continue
-    with a pipe, a `;`, or a `{` (object type) — handles both
+    with a pipe, a `;`, or a `{` (object type) - handles both
     `type X = "a" | "b"` and the leading-pipe-per-line idiom."""
     tail = text[start:start + 4000]
     out = []
@@ -100,7 +100,7 @@ def scan_typescript(ts_files: list[Path], root: Path) -> tuple[list[Machine], li
             machine.sources.append(rel)
             machine.notes.append("states from string-literal union type")
 
-        # 2) anchored writes — always unguarded (no dataflow in a lexical pass)
+        # 2) anchored writes - always unguarded (no dataflow in a lexical pass)
         count = 0
         for m in _WRITE.finditer(text):
             if count >= _MAX:

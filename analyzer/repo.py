@@ -96,7 +96,7 @@ def ledger_path() -> Path:
 def find_spec(root: Path) -> Path | None:
     """Look for .meridian.yaml upwards from root (repo sentinel), bounded.
 
-    The walk stops at any git boundary — including the start directory
+    The walk stops at any git boundary - including the start directory
     itself: a spec belongs to its repo, not to whatever sits above it.
     The starting root is checked first, so a repo whose spec is nested one
     level up is still found.

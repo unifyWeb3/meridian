@@ -1,4 +1,4 @@
-"""Tool schemas — the contract the model reads."""
+"""Tool schemas - the contract the model reads."""
 
 _ROOT_PROP = {
     "type": "string",
@@ -13,7 +13,7 @@ MERIDIAN_SCAN = {
     "description": (
         "Scan a repository and discover the implicit state machines hidden in it: "
         "state-like fields (status/state/phase/stage/...) that are assigned, "
-        "compared and switched on — even though nobody wrote a state machine down. "
+        "compared and switched on - even though nobody wrote a state machine down. "
         "Returns each machine with its states, initial states and every anchored "
         "transition (file:line), plus unreachable and dead states. Use this first, "
         "before proposing fixes or refactors, whenever the user asks about states, "
@@ -36,8 +36,8 @@ MERIDIAN_VERIFY = {
         ".meridian.yaml spec exists, against its allowed/forbidden transition edges. "
         "Detects unreachable and dead states (when an initial state is known), "
         "unguarded writes, and allow/deny edge violations with file:line anchors. "
-        "Call this after any edit that touches a machine's source files — "
-        "especially after you change lifecycle code — and before claiming a bug "
+        "Call this after any edit that touches a machine's source files - "
+        "especially after you change lifecycle code - and before claiming a bug "
         "is fixed. Note: `ok` is false when a discovered machine is not covered "
         "by the spec (it is unenforced, not necessarily broken)."
     ),
@@ -64,7 +64,7 @@ MERIDIAN_DIAGRAM = {
         "Render a machine as Mermaid stateDiagram-v2 text, or export it as "
         "XState v5 JSON. Transitions are labeled with the function that "
         "performs them. In XState output, event names are generated placeholders "
-        "— wire your own before using it in production. "
+        "that you should replace before using it in production. "
         "Mermaid for docs, tickets and PR descriptions."
     ),
     "parameters": {
@@ -73,7 +73,7 @@ MERIDIAN_DIAGRAM = {
             "root": _ROOT_PROP,
             "machine_id": {
                 "type": "string",
-                "description": "Machine id (e.g. 'Order.status'). Required — call meridian_scan first to list ids.",
+                "description": "Machine id (e.g. 'Order.status'). Required - call meridian_scan first to list ids.",
             },
             "format": {
                 "type": "string",
@@ -88,7 +88,7 @@ MERIDIAN_DIAGRAM = {
 MERIDIAN_SPEC = {
     "name": "meridian_spec",
     "description": (
-        "Work with the .meridian.yaml spec — the enforcement layer. Actions: "
+        "Work with the .meridian.yaml spec - the enforcement layer. Actions: "
         "'draft' returns the spec Meridian would accept today (every edge is an "
         "observed, anchored transition; you review it with the user before "
         "accepting); 'accept' writes it (refuses to overwrite without force, keeps "
@@ -135,7 +135,7 @@ MERIDIAN_LEDGER = {
         "entries; 'stats' shows event counts; 'repair' drops a torn/corrupt "
         "tail, keeps the valid prefix and keeps a backup (needed only after a "
         "crash mid-write). The ledger records machine ids, "
-        "verdict counts and file:line anchors — never file contents."
+        "verdict counts and file:line anchors - never file contents."
     ),
     "parameters": {
         "type": "object",

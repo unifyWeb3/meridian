@@ -1,4 +1,4 @@
-"""Meridian tests — stdlib unittest only (the plugin itself has zero deps).
+"""Meridian tests - stdlib unittest only (the plugin itself has zero deps).
 
 Run:  python3 -m unittest discover -s tests -v
 """
@@ -274,7 +274,7 @@ class LedgerTests(TempRepoTest):
 
 
 class ReviewFixTests(TempRepoTest):
-    """Regressions for review findings — each of these was a real defect."""
+    """Regressions for review findings - each of these was a real defect."""
 
     def test_not_branch_is_not_a_constraint(self):
         self.write("n.py", """

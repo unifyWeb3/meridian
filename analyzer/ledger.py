@@ -9,13 +9,13 @@ Durability rules:
   msvcrt on Windows; best effort otherwise), so concurrent agents
   cannot fork the chain;
 - appends re-verify incrementally (per size change), not from scratch;
-- a torn final line (crash mid-write) never validates silently —
+- a torn final line (crash mid-write) never validates silently:
   `repair()` is the explicit recovery: it keeps the valid prefix,
   quarantines the original, and stamps a `ledger_repair` event naming
   exactly what was dropped.
 
 What is stored: event names, machine ids, verdict counts, anchors
-(file:line) — never file contents, never secrets.
+(file:line) - never file contents, never secrets.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def _verify_cached(path: Path) -> bool:
     """True when the on-disk chain is internally consistent.
 
     Re-verified whenever (size, mtime) changed since the last check in this
-    process — every legal writer goes through append()/repair(), so any
+    process - every legal writer goes through append()/repair(), so any
     in-place edit registers. (verify()/repair(), the audit paths, always
     re-verify fully regardless of this cache.)
     """
@@ -154,7 +154,7 @@ def _append_unlocked(path: Path, event: str, data: dict) -> dict:
         if not _verify_cached(path):
             problems = _chain_problems(entries)
             raise LedgerError(
-                f"ledger {path} chain is broken ({'; '.join(problems[:3])}) — "
+                f"ledger {path} chain is broken ({'; '.join(problems[:3])}) - "
                 "run `hermes meridian ledger verify`; refusing to extend it")
         seq = int(entries[-1].get("seq", 0)) + 1
         prev = str(entries[-1].get("hash"))

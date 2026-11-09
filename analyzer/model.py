@@ -1,4 +1,4 @@
-"""Meridian — data model.
+"""Meridian - data model.
 
 A *machine* is one state-like attribute of one class (or one module-level
 string field) together with every state it can hold and every transition

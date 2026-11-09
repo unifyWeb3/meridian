@@ -1,4 +1,4 @@
-"""Meridian — implicit state machines in your codebase, verified for you.
+"""Meridian - implicit state machines in your codebase, verified for you.
 
 register(ctx): tools + hooks + slash command + `hermes meridian` CLI.
 """
@@ -102,7 +102,7 @@ def _store_note(key: str, text: str) -> None:
 def _take_notes(key: str) -> list[str]:
     # The session-keyed bucket is popped when we know the session; the shared
     # "local" bucket (notes from hooks that got no session/task id) is popped
-    # as a fallback for whoever asks next — in gateway deployments a note
+    # as a fallback for whoever asks next - in gateway deployments a note
     # may surface in the next turn of any chat in the same profile. That is
     # disclosed behavior, not a correlation guarantee.
     notes = [t for _, t in _PENDING_NOTES.pop(key, [])]
@@ -137,7 +137,7 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
                 if len(probe) > _MAX_RESCAN_FILES:
                     notes_for_key.append(
                         f"meridian: {root.name} has {len(probe)} source files; "
-                        f"auto-verify skipped — run meridian_verify manually")
+                        f"auto-verify skipped - run meridian_verify manually")
                     continue
                 result_scan = scan_root(root, max_files=_MAX_RESCAN_FILES)
             except Exception:
@@ -157,7 +157,7 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
                 if verdict.violations:
                     for v in verdict.violations[:5]:
                         notes_for_key.append(
-                            f"meridian: {v.file}:{v.line} — {v.src} -> {v.dst} via {v.via}() "
+                            f"meridian: {v.file}:{v.line} - {v.src} -> {v.dst} via {v.via}() "
                             f"violates {machine.id} ({v.detail})")
             try:
                 ledger.append("auto_reverify", {
@@ -168,7 +168,7 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
             except Exception:
                 pass
         if notes_for_key:
-            text = ("Meridian — this edit touched state-machine code:\n"
+            text = ("Meridian - this edit touched state-machine code:\n"
                     + "\n".join(f"  - {n}" for n in notes_for_key[:8])
                     + "\nRun meridian_verify for full details.")
             _store_note(str(task_id or "local"), text)
@@ -204,17 +204,17 @@ def _handle_meridian(raw_args: str) -> str:
     root = _session_cwd()
     if sub in ("help", "-h", "--help"):
         return ("/meridian [status|scan|verify|check|ledger]\n"
-                "  status — machines found here + spec state\n"
-                "  scan   — discover machines in this repo\n"
-                "  verify — edge verdicts (unreachable/dead/unguarded)\n"
-                "  check  — enforce .meridian.yaml (CI primitive)\n"
-                "  ledger — ledger integrity summary")
+                "  status - machines found here + spec state\n"
+                "  scan   - discover machines in this repo\n"
+                "  verify - edge verdicts (unreachable/dead/unguarded)\n"
+                "  check  - enforce .meridian.yaml (CI primitive)\n"
+                "  ledger - ledger integrity summary")
     if sub == "ledger":
         try:
             status = ledger.verify()
-            return (f"meridian ledger: {'valid' if status['ok'] else 'BROKEN'} — "
+            return (f"meridian ledger: {'valid' if status['ok'] else 'BROKEN'} - "
                     f"{status['entries']} entries"
-                    + ("" if status["ok"] else f" — {status['problems'][:2]}"))
+                    + ("" if status["ok"] else f" - {status['problems'][:2]}"))
         except Exception as exc:
             return f"meridian ledger: {exc}"
     try:
@@ -229,7 +229,7 @@ def _handle_meridian(raw_args: str) -> str:
             lines.append(f"  - {machine.id} [{machine.confidence}] "
                          f"{len(machine.states)} states, {len(machine.transitions)} transitions")
         spec = repo_mod.find_spec(root)
-        lines.append(f"  spec: {spec if spec else 'none — `hermes meridian spec draft` to start'}")
+        lines.append(f"  spec: {spec if spec else 'none - `hermes meridian spec draft` to start'}")
         return "\n".join(lines)
     if sub in ("verify", "check"):
         try:
@@ -249,9 +249,9 @@ def _handle_meridian(raw_args: str) -> str:
         elif lines:
             lines.append("meridian: 0 violations, but machines are uncovered")
         else:
-            lines.append(f"meridian: OK — {len(payload['verdicts'])} machine(s) verified, 0 violations")
+            lines.append(f"meridian: OK - {len(payload['verdicts'])} machine(s) verified, 0 violations")
         return "\n".join(lines)
-    return f"meridian: unknown subcommand '{sub}' — try /meridian help"
+    return f"meridian: unknown subcommand '{sub}' - try /meridian help"
 
 
 # ----------------------------------------------------------- cli
@@ -271,7 +271,7 @@ def _cli_dispatch(args):
         if getattr(args, "json", False):
             print(json.dumps(tools._scan_payload(result, full=True), indent=2))
             return
-        print(f"meridian scan — {result.files_scanned} files, {len(result.machines)} machine(s), {result.elapsed_ms}ms")
+        print(f"meridian scan - {result.files_scanned} files, {len(result.machines)} machine(s), {result.elapsed_ms}ms")
         for machine in result.machines:
             print(f"  {machine.id:32} conf={machine.confidence:6} states={len(machine.states)} transitions={len(machine.transitions)}")
         return
@@ -290,20 +290,20 @@ def _cli_dispatch(args):
             return 2
         if not payload.get("spec"):
             # A CI gate that passes because the spec is missing is a false green.
-            print(f"meridian check: no .meridian.yaml at or above {root} — nothing to enforce (exit 2)")
+            print(f"meridian check: no .meridian.yaml at or above {root} - nothing to enforce (exit 2)")
             return 2
         cov = payload.get("coverage", {})
         if cov.get("spec_covers_nothing"):
-            print("meridian check: the spec covers none of this repo's machines — refusing a false green (exit 2)")
+            print("meridian check: the spec covers none of this repo's machines - refusing a false green (exit 2)")
             return 2
         if cov.get("uncovered_machines") and not allow_uncovered:
-            print(f"meridian check FAILED — {len(cov['uncovered_machines'])} machine(s) not covered by the spec:")
+            print(f"meridian check FAILED - {len(cov['uncovered_machines'])} machine(s) not covered by the spec:")
             for mid in cov["uncovered_machines"]:
                 print(f"  COVERAGE  {mid}")
             print("(run `hermes meridian spec accept --force`, or pass --allow-uncovered to waive)")
             return 1
         if payload["violation_count"]:
-            print(f"meridian check FAILED — {payload['violation_count']} violation(s):")
+            print(f"meridian check FAILED - {payload['violation_count']} violation(s):")
             for v in payload["violations"]:
                 print(f"  {v['anchor']}  {v['src']} -> {v['dst']}  ({v['via']})  [{v['rule']}]")
             try:
@@ -312,7 +312,7 @@ def _cli_dispatch(args):
             except Exception:
                 pass
             return 1
-        print(f"meridian check OK — {len(payload['verdicts'])} machine(s), 0 violations")
+        print(f"meridian check OK - {len(payload['verdicts'])} machine(s), 0 violations")
         try:
             ledger.append("check", {"root": str(root), "ok": True, "violation_count": 0})
         except Exception:
@@ -389,9 +389,9 @@ def _cli_dispatch(args):
         if action == "verify":
             status = ledger.verify()
             if status["ok"]:
-                print(f"meridian ledger OK — {status['entries']} entries, head {status['head']}")
+                print(f"meridian ledger OK - {status['entries']} entries, head {status['head']}")
                 return 0
-            print(f"meridian ledger BROKEN — {status['entries']} entries:")
+            print(f"meridian ledger BROKEN - {status['entries']} entries:")
             for problem in status["problems"]:
                 print(f"  - {problem}")
             return 1
@@ -401,7 +401,7 @@ def _cli_dispatch(args):
         if action == "repair":
             result = ledger.repair()
             if result.get("dropped_lines"):
-                print(f"meridian ledger REPAIRED — kept {result['kept']} entries, "
+                print(f"meridian ledger REPAIRED - kept {result['kept']} entries, "
                       f"dropped {result['dropped_lines']} line(s); backup at {result['backup']}")
             else:
                 print(f"meridian ledger: nothing to repair ({result.get('kept', 'n/a')} entries intact)")
@@ -499,7 +499,7 @@ def register(ctx) -> None:
 
     ctx.register_cli_command(
         name="meridian",
-        help="Meridian — find and verify implicit state machines",
+        help="Meridian - find and verify implicit state machines",
         setup_fn=_setup_cli,
         handler_fn=_cli_main,
     )

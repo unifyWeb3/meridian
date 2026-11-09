@@ -1,8 +1,8 @@
-"""Order pipeline — a deliberately ordinary, deliberately buggy service.
+"""Order pipeline - a deliberately ordinary, deliberately buggy service.
 
 For the Meridian demo only: this module models a checkout flow where the
 state machine lives implicitly in the `status` field. Nobody documented
-it, nobody tested the transitions — Meridian finds them.
+it, nobody tested the transitions - Meridian finds them.
 
 Run `python3 orders.py` to smoke-test the happy path.
 """

@@ -1,11 +1,11 @@
 """Deterministic verdicts on discovered machines.
 
-    reachable    — BFS from the discovered initial states
-    unreachable  — states no path from initial can reach
-    dead         — states never written at all (enum/annot only)
-    terminal     — states with no outgoing transition (informational)
-    unguarded    — writes with no same-function comparison against the field
-    violations   — anchored (src -> dst) edges the spec forbids or omits
+    reachable    - BFS from the discovered initial states
+    unreachable  - states no path from initial can reach
+    dead         - states never written at all (enum/annot only)
+    terminal     - states with no outgoing transition (informational)
+    unguarded    - writes with no same-function comparison against the field
+    violations   - anchored (src -> dst) edges the spec forbids or omits
 
 Nothing here uses a model. Inputs decide outputs.
 """
@@ -97,7 +97,7 @@ def analyze_machine(
     # Entry (src=None) writes are optimistic one-time seeds: a write that
     # can fire from any state may produce any of its targets. We do NOT
     # union general states in as seeds, because pretending every state is
-    # an initial hides unreachable bugs — but when no initial was
+    # an initial hides unreachable bugs - but when no initial was
     # discovered at all, reachability is unknown and we say so instead of
     # reporting an empty "unreachable".
     entry_seeds = adjacency.get(None, [])
@@ -188,7 +188,7 @@ def analyze_machine(
     else:
         if unguarded:
             notes.append(
-                f"{len(unguarded)} unguarded write(s) — accept a spec with `hermes meridian spec accept` to enforce")
+                f"{len(unguarded)} unguarded write(s) - accept a spec with `hermes meridian spec accept` to enforce")
 
     return MachineVerdict(
         machine_id=machine.id,

@@ -3,7 +3,7 @@
 The spec is what makes a violation *illegal* rather than merely unusual.
 Discovery works without one; enforcement needs one. Contains no code,
 only sets of allowed/forbidden edges, so reviewing it is a five-minute
-job — by a human or by the AI, which proposes and the verifier gates.
+job - by a human or by the AI, which proposes and the verifier gates.
 
 Loader order: JSON (valid YAML) -> PyYAML (if present) -> a small
 built-in parser for this exact schema. Writers always emit plain YAML.
@@ -170,7 +170,7 @@ def _mini_yaml(text: str) -> dict[str, Any]:
 
 
 def _coerce_spec(data: Any, path: Path) -> Spec:
-    """Validate the spec strictly. Anything malformed raises SpecError —
+    """Validate the spec strictly. Anything malformed raises SpecError:
     silently dropping bad edges would make enforcement a no-op with a
     green exit code, which is the one failure mode this plugin must never
     have."""
@@ -299,7 +299,7 @@ def draft_spec(machines: list[Any]) -> str:
 
     lines = ["version: 1",
              "# Drafted by Meridian from anchored evidence. Review every edge before",
-             "# committing — the verifier enforces exactly what you accept here.",
+             "# committing - the verifier enforces exactly what you accept here.",
              "machines:"]
     for machine in machines:
         lines.append(f"  - id: {_yaml_quote(machine.id)}")
@@ -321,7 +321,7 @@ def draft_spec(machines: list[Any]) -> str:
 def write_spec(root: Path, content: str, *, force: bool = False) -> Path:
     target = root / ".meridian.yaml"
     if target.exists() and not force:
-        raise SpecError(f"{target} exists — pass force=True to overwrite (a .bak is kept)")
+        raise SpecError(f"{target} exists - pass force=True to overwrite (a .bak is kept)")
     if target.exists():
         target.with_suffix(".yaml.bak").write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
     target.write_text(content, encoding="utf-8")

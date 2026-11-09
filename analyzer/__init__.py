@@ -1,4 +1,4 @@
-"""Meridian package — implicit state machines in your codebase.
+"""Meridian package - implicit state machines in your codebase.
 
 The AI (whatever model drives this Hermes) *proposes*: it calls the
 meridian tools, reads machine candidates, drafts the .meridian.yaml spec.

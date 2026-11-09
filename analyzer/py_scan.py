@@ -3,7 +3,7 @@
 Deterministic and total: syntax errors are recorded and skipped, never
 raised. Guarded writes are attributed to the branch that encloses the
 write (`if`/`elif`/`while` tests only). A write with no enclosing branch
-is unguarded — never assigned a fabricated source state.
+is unguarded - never assigned a fabricated source state.
 
 Every claim carries file:line evidence. Nothing here uses a model.
 """
@@ -144,7 +144,7 @@ def _resolve_value(
                 hits.append(enum_name)
             return members[node.attr]
         # Not an enum member and not a plain literal: the value cannot be
-        # anchored — never fabricate a state from an attribute name.
+        # anchored - never fabricate a state from an attribute name.
         if hits is not None and enum_name and _LITERAL.match(node.attr.lower()):
             hits.append(enum_name)  # alphabet still applies; value unverified
         return None
@@ -171,7 +171,7 @@ def _compare_frame(
     """{field: positive literal constraints} from one branch test.
 
     Only Eq/In produce constraints (the branch runs because the test was
-    true). NotEq excludes values — a constraint we cannot enumerate — so it
+    true). NotEq excludes values - a constraint we cannot enumerate - so it
     is ignored. Compares nested under `Not` are NOT constraints (the branch
     runs because the equality was false) and are skipped entirely.
     """
@@ -215,7 +215,7 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
     constants, dropped_constants = _constant_table(parsed)
     warnings: list[str] = []
     for name in dropped_constants:
-        warnings.append(f"constant {name} defined with different values in multiple modules — not used to resolve writes")
+        warnings.append(f"constant {name} defined with different values in multiple modules - not used to resolve writes")
     machines: dict[str, Machine] = {}
     enum_hits: dict[str, set[str]] = {}
 
@@ -407,7 +407,7 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
                         if isinstance(t, ast.Attribute) and _is_state_name(t.attr):
                             warnings.append(
                                 f"{rel}:{sub.lineno}: nested scope '{name}' writes state field "
-                                f"'{t.attr}' — not analyzed")
+                                f"'{t.attr}' - not analyzed")
         walk_block(fn.body, [])
 
     for rel, tree in parsed.items():
