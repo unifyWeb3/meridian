@@ -1,179 +1,132 @@
 # Meridian
 
-![Meridian — the state machines your codebase never wrote down](docs/banner.svg)
+![Banner](docs/banner.svg)
 
-**Find the state machines your codebase never wrote down — and prove every one of them.**
+**Every `status` field in your codebase is a state machine nobody wrote down.**
+Meridian finds them, proves every transition against your source, and fails CI
+when one of them is illegal.
 
-Every `status`, `state`, `phase`, `stage`, `step` and `disposition` field in your
-repo is a state machine that nobody documented, nobody reviewed, and nobody
-tested. It is also where *"impossible"* bugs live — the refund that fires before
-any money moved, the `warehouse_hold` that exists in the enum but no code path
-can ever reach, the "support override" that closes a ticket from anywhere.
+*Not* a prompt, *not* a linter, *not* vibes. A deterministic analyzer with an
+acceptance gate and a tamper-evident ledger — running inside your Hermes agent
+or in your pipeline.
 
-Meridian is a Hermes Agent plugin that finds those implicit machines, anchors
-every state and transition to real source (`file:line`), and enforces the
-transitions you accept — in the agent, in your terminal, and in CI.
+---
 
-> Let the AI propose. Let deterministic code decide. Keep a log nobody can quietly edit.
+## The problem this solves
 
-## What it does
+The bugs that hurt you most are the "impossible" ones:
 
-```
-meridian_scan        → discover machines: states, initial states, transitions (file:line),
-                       unreachable states, dead states, unguarded writes
-meridian_verify      → edge-level verdicts; spec violations with anchors; coverage gaps flagged
-meridian_diagram     → Mermaid stateDiagram-v2 or XState v5 JSON
-meridian_spec        → draft / accept / show / check the .meridian.yaml spec (CI primitive)
-meridian_ledger      → SHA-256 hash-chained, append-only evidence ledger of every verdict
-meridian_report      → self-contained Markdown report (with an embedded Mermaid diagram)
-```
+- `orders.refunded = True` while nobody ever paid for the order
+- a ticket that `force_close()` marks `delivered` no matter where it was
+- a `WAREHOUSE_HOLD` status that exists in your enum and nowhere in your code —
+  three months of "why is the SLA report full of blanks?"
 
-Plus `/meridian` in-session, `hermes meridian <scan|verify|check|report|diagram|spec|ledger>`
-from the shell, an auto-verify hook that re-checks state-machine files right after
-the agent edits them, and a bundled `meridian:audit` skill.
+Agents write more lifecycle code than humans review. Nobody documents the
+machine; nobody tests the edges; and when it breaks you get a refund you
+cannot explain and a customer who won't buy again.
 
-**Zero dependencies. Zero network calls. No model calls. Zero configuration.**
-Python sources are analyzed with a real AST pass; TypeScript/JavaScript with a
-lexical pass (findings marked low/medium confidence). A plugin that fails its
-own checks fails *loudly*, not silently.
+Meridian turns `grep status ==` into an auditable, enforceable state machine:
+discovered from your code, anchored to `file:line`, gated by a spec **you**
+review, and checked on every change from now on.
 
-## In one sitting — what it catches
+## What it actually does (90 seconds, real output)
 
-Given an ordinary, deliberately buggy order pipeline (`examples/demo-order-pipeline/`):
+Point it at a freshly-merged order service with two seeded defects:
 
 ```
-files_scanned: 1    machines: 4 (Order.status, Order.payment_status, enum:*)
-Order.status
+$ hermes meridian check --root examples/demo-order-pipeline
+meridian check FAILED — 2 violation(s):
+  orders.py:62  unverified_shipping -> shipped  (ship)  [not-allowed]
+  orders.py:78  draft -> refunded  (refund)  [deny]
+```
+
+- `orders.py:62` — a dead branch: a guard comparing against a state nothing can
+  enter (`unverified_shipping`). Dead code wearing a feature's clothes.
+- `orders.py:78` — a refund path accepted from `draft`, before money ever
+  moved. Impossible, and very real.
+
+Scan it instead and you see everything it cannot legally reach:
+
+```
+Order.status — 11 states, initial draft (constructor), reachable 9
   unreachable: unverified_shipping, warehouse_hold
   dead:        unverified_shipping, warehouse_hold
-  VIOLATION    orders.py:62   unverified_shipping -> shipped   [not-allowed]
-  VIOLATION    orders.py:78   draft -> refunded                [deny: money never moved]
-  warning      orders.py:84   unguarded write via force_close()
+  unguarded:   orders.py:84 force_close()
 ```
 
-`hermes meridian check` exits `1`. Fix the two lines, re-run, exit `0`.
+Then Meridian drafts the spec for you (`meridian spec draft`) — every edge it
+proposes is an **observed, anchored** transition. You cross out the ones you
+don't want. You `accept`. From that moment, `hermes meridian check` in CI is
+the law, and your agent's edits are re-verified on the next turn instead of
+quietly reintroducing the bug.
 
-## Install & use
+## Why a plugin, not a prompt
+
+Because a prompt cannot do this, mechanically:
+
+| You need | Prompt/skill | Meridian |
+| --- | --- | --- |
+| Deterministic failure on a forbidden edge | no | `check` exits 1, on commit or in CI |
+| Evidence you can audit later | no | SHA-256 hash-chained, append-only ledger; `ledger verify` proves it |
+| Re-verification after every agent edit | no | `post_tool_call` hook re-scans and tells the next turn |
+| Zero tokens, zero network, zero model required | n/a | stdlib only, installs nothing, runs offline |
+
+And where a human does come in — accepting the spec, writing the deny list —
+it's because *legality is your call, not the AI's*. Meridian enforces exactly
+the edges you accept, and says so when it can't verify one.
+
+## Who this is for (and who it isn't)
+
+**Install it if** you own a service with at least one status/state field
+(order flows, ticketing, subscriptions, jobs, deploys, payments) *or* you run
+agents on that code and want a deterministic backstop when they refactor
+lifecycle code. This is the tool for your `services/`, not your `utils/`.
+
+**Don't install it if** your repo has no lifecycle state at all — it will find
+nothing to enforce, and that's correct behavior, not a bug.
+
+## Use it
 
 ```bash
-# as a Hermes plugin (catalog or local directory)
-hermes plugins install meridian                      # once listed
-hermes plugins enable meridian
-
-# or from a checkout
-hermes plugins install ./meridian --enable
-hermes plugins doctor ./meridian --ci
-hermes plugins validate ./meridian --install-deps
+hermes plugins install unifyWeb3/meridian --enable   # or from the catalog
+hermes meridian scan .
+hermes meridian check --strict        # exit 1 on violations — wire into CI
+hermes meridian report --out .meridian/report.md
+hermes meridian ledger verify
 ```
 
 In a session:
 
 ```
-You: find the state machines in this repo            → meridian_scan
-You: why can orders get refunded before they ship?   → meridian_verify
-You: accept the spec (we reviewed it)                → meridian_spec accept
+You: map the state machines in this repo, verify them, and show me what breaks
+Agent: meridian_scan → meridian_verify → meridian_spec draft
+You: accept, but cross out the warehouse_hold edges
+Agent: meridian_spec accept   # from now on, CI enforces it
 ```
 
-From your shell / CI (fail the build on new violations):
+## Honest limits
 
-```bash
-hermes meridian scan .            # table of machines
-hermes meridian check --strict    # exit 1 on violations
-hermes meridian report --out .meridian/report.md
-hermes meridian ledger verify     # re-verify the evidence chain
-```
-
-```yaml
-# CI sketch — install Hermes the way your runner needs it, then enforce the spec
-- uses: actions/checkout@v4
-- name: Install Hermes
-  run: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-- name: Verify state machines
-  run: hermes meridian check --strict --root .
-```
-
-## How it works — the three layers
-
-1. **Discover (deterministic).** AST-based extraction for Python: enums with
-   state-like names become exact alphabets; state-like fields
-   (`status|state|phase|stage|step|disposition|lifecycle|mode|workflow|fulfillment`)
-   become machines; writes inside `if`/`elif`/`while` branches are attributed to
-   exactly those branches — never to a made-up source. Initial states come from
-   constructors and class-level defaults. Unreachable states (no path from a
-   known initial state) and dead states (never constructed) are first-class
-   findings. Nested `def`/`lambda` scopes are **not** analyzed — a warning
-   lists every one that writes a state field.
-2. **Verify (deterministic, spec-gated).** `.meridian.yaml` is the enforcement
-   input: an `allow`/`deny` edge list per machine, drafted from observed anchored
-   transitions, reviewed by a human or the agent, accepted explicitly. Then
-   `check` is exact: any anchored edge denied or not in `allow` is a violation
-   with a `file:line` anchor; unguarded non-constructor writes are warnings
-   (violations with `--strict`); constructor writes are checked against the
-   spec's `initial` in strict mode. `deny` always wins over `allow`. A spec
-   that covers nothing, or a discovered (non-enum-only) machine outside the
-   spec, fails the check — no false greens. Enum-only machines are exempt
-   from the uncovered gate because they carry no edges to enforce.
-3. **Audit (hash-chained).** Every scan, verdict, spec acceptance, check and
-   repair is an entry in `$HERMES_HOME/plugin-data/meridian/ledger.jsonl`, each
-   entry committing to the previous entry's SHA-256. `meridian_ledger verify`
-   recomputes the whole chain; `meridian_ledger repair` is the explicit
-   recovery for a torn final line (keeps the valid prefix, keeps a backup).
-   Appends are serialized through a sidecar lock. The ledger stores machine
-   ids, verdict counts and anchors — never file contents.
-
-### Where the AI fits
-
-Hermes's model calls the Meridian tools; it proposes — the machine
-names, the spec draft, the fix you apply next. Meridian decides — nothing it
-reports is model-asserted, and nothing enters the spec without passing the
-acceptance gate. If no model is in play (CI, cron), everything still works:
-the analyzer is pure deterministic code.
-
-**Capabilities, honestly.** Zero dependencies (stdlib only — there is no
-`pyproject.toml` and nothing to install). Zero network calls, zero model
-calls, zero telemetry, zero shell-outs, no background processes. Python ≥ 3.9.
-Works identically offline/in CI. Runs bounded: per-file size cap (512 KB),
-global file cap per scan (5000, truncation is reported), hook budget (400-file
-and 10-file caps).
-
-## Configuration
-
-`config.yaml` under `plugins.entries.meridian.settings`:
-
-- `auto_verify` (default `true`) — re-scan state-machine files right after the
-  agent edits them and surface spec violations in the next turn. Advisory; never
-  blocks, vetoes or rewrites anything.
-- `strict` (default `false`) — unguarded non-constructor writes count as
-  violations in `meridian_spec check` / `hermes meridian check --strict`.
-
-Environment variables (all optional):
-
-- `HERMES_HOME` — Hermes profile root used for the plugin data dir (ledger).
-  Default `~/.hermes`.
-- `MERIDIAN_ROOT` — default repository root for the tools when they cannot
-  learn one from the session. Overrides the session cwd when set.
-
-## What Meridian does not do
-
-- It cannot know domain legality. It enforces the spec you accept; review the draft.
-- JS/TS evidence is lexical: transitions are always unguarded (TS never
-  fabricates a source state), union-type alphabets are exact, other evidence is
-  labeled `low` confidence. The Python AST pass is authoritative for `.py`.
+- Meridian enforces the **accepted spec**. If your spec is wrong, your check
+  is wrong. Review the draft before accepting.
+- Python analysis is AST-based and authoritative. TypeScript/JavaScript is
+  lexical: union-type alphabets are exact, other evidence is labeled
+  low/medium confidence, and JS transitions are always unguarded by
+  construction.
 - Unguarded writes are suspicions, not guilty verdicts.
-- Nested function/lambda scopes are not analyzed; warnings list the writers.
-- Unreachable states are only reported when an initial state is known
-  (otherwise the report says so instead of showing an empty list).
-- Scans see one tree at a time; extremely large repos are truncated at the
-  cap, and the truncation is printed, not silent.
+- Nested `def`/`lambda` scopes are not analyzed; a warning lists every writer.
+- Unreachable states are reported only when an initial state is known.
+- Enforcement covers machines in the spec; non-enum machines outside it fail
+  `check` (waive with `--allow-uncovered`). Enum-only machines are exempt
+  because they carry no edges.
 
 ## Develop & test
 
 ```bash
-python3 -m unittest discover -s tests -v   # stdlib only
+python3 -m unittest discover -s tests -v   # 28 checks, stdlib only
 ```
 
-The plugin is a single directory: `plugin.yaml` + `__init__.py` + `analyzer/`
-+ `schemas.py` + `tools.py` + a bundled `skills/audit/SKILL.md`.
+Plugin layout: `plugin.yaml` + `__init__.py` + `analyzer/` (scan → verify →
+spec → ledger) + `schemas.py` + `tools.py` + `skills/audit/SKILL.md`.
 
 ## License
 
