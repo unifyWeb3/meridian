@@ -398,12 +398,16 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
             if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 name = getattr(sub, "name", "<lambda>")
                 for inner in ast.walk(sub):
+                    targets: list[ast.AST] = []
                     if isinstance(inner, ast.Assign):
-                        for t in inner.targets:
-                            if isinstance(t, ast.Attribute) and _is_state_name(t.attr):
-                                warnings.append(
-                                    f"{rel}:{sub.lineno}: nested scope '{name}' writes state field "
-                                    f"'{t.attr}' — not analyzed")
+                        targets = list(inner.targets)
+                    elif isinstance(inner, ast.AnnAssign):
+                        targets = [inner.target]
+                    for t in targets:
+                        if isinstance(t, ast.Attribute) and _is_state_name(t.attr):
+                            warnings.append(
+                                f"{rel}:{sub.lineno}: nested scope '{name}' writes state field "
+                                f"'{t.attr}' — not analyzed")
         walk_block(fn.body, [])
 
     for rel, tree in parsed.items():

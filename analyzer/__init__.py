@@ -7,4 +7,4 @@ is derived from source by ast/token analysis, never from vibes. The
 ledger (`analyzer.ledger`) keeps the audit trail.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.2"

@@ -53,7 +53,20 @@ def _parse_scalar(raw: str) -> Any:
     if raw == "":
         return ""
     if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
-        return raw[1:-1]
+        body = raw[1:-1]
+        if raw.startswith('"'):
+            # sequential unescape exactly as the writer emits it
+            out: list[str] = []
+            i = 0
+            while i < len(body):
+                if body[i] == "\\" and i + 1 < len(body) and body[i + 1] in ('"', "\\"):
+                    out.append(body[i + 1])
+                    i += 2
+                    continue
+                out.append(body[i])
+                i += 1
+            body = "".join(out)
+        return body
     if raw.lower() == "true":
         return True
     if raw.lower() == "false":
@@ -105,6 +118,9 @@ def _mini_yaml(text: str) -> dict[str, Any]:
         line = raw_line.rstrip()
         if not line.strip() or line.strip().startswith("#"):
             continue
+        indent_text = line[: len(line) - len(line.lstrip(" "))]
+        if "\t" in indent_text:
+            raise SpecError(f"line {lineno}: tabs are not supported in .meridian.yaml; use spaces")
         indent = indent_of(line)
         stripped = line.strip()
 
@@ -224,6 +240,10 @@ def _coerce_spec(data: Any, path: Path) -> Spec:
         machines.append(SpecMachine(id=machine_id.strip(), states=states,
                                     initial=initial, allow=allow,
                                     deny=deny, notes=notes))
+    ids = [m.id for m in machines]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        errors.append(f"duplicate machine id(s): {', '.join(duplicates)}")
     if errors:
         raise SpecError("invalid spec:\n  - " + "\n  - ".join(errors[:20]))
     return Spec(path=path, version=version, machines=machines)

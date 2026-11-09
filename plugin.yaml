@@ -1,5 +1,5 @@
 name: meridian
-version: 1.0.1
+version: 1.0.2
 manifest_version: 2
 api_version: 1
 description: "Finds and verifies the implicit state machines hidden in your codebase. The agent proposes; a deterministic analyzer proves every state and transition against real source (file:line anchors); a hash-chained evidence ledger audits every verdict. Unreachable states, dead states, unguarded writes and spec-forbidden transitions — flagged on every edit that touches them. No model calls, no network, no dependencies beyond the standard library."

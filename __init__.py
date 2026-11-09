@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import time
 from pathlib import Path
 
@@ -20,6 +19,7 @@ from .analyzer import graph
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_WRITE_HINTS = ("write", "patch", "editor", "edit", "replace", "create")
 _MAX_RESCAN_FILES = 400
 _NOTE_TTL_SECONDS = 1200
 _PENDING_NOTES: dict[str, list[tuple[float, str]]] = {}
@@ -100,8 +100,11 @@ def _store_note(key: str, text: str) -> None:
 
 
 def _take_notes(key: str) -> list[str]:
-    # Only this session's bucket (or the shared "local" bucket when no
-    # session is known) is ever injected — notes never leak across sessions.
+    # The session-keyed bucket is popped when we know the session; the shared
+    # "local" bucket (notes from hooks that got no session/task id) is popped
+    # as a fallback for whoever asks next — in gateway deployments a note
+    # may surface in the next turn of any chat in the same profile. That is
+    # disclosed behavior, not a correlation guarantee.
     notes = [t for _, t in _PENDING_NOTES.pop(key, [])]
     if key != "local":
         notes += [t for _, t in _PENDING_NOTES.pop("local", [])]
@@ -115,8 +118,10 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
         if not _AUTO_VERIFY:
             return None
         lowered = (tool_name or "").lower()
-        tokens = set(re.findall(r"[a-z0-9]+", lowered))
-        if not (tokens & {"write", "patch", "editor", "edit_file", "create_file", "str_replace", "append"}):
+        # Substring match by design: write/edit/patch-shaped tools are what
+        # carry file changes; over-triggering costs one bounded advisory
+        # rescan, under-triggering misses real edits entirely.
+        if not any(hint in lowered for hint in _WRITE_HINTS):
             return None
         changed = _changed_files(args or {})
         if not changed:

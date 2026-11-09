@@ -23,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,8 +31,8 @@ from .repo import ledger_path, plugin_data_dir
 SCHEMA = "meridian.ledger.v1"
 _GENESIS = "0" * 64
 
-# path -> (size_bytes_at_last_verify, verified_ok)
-_VERIFY_CACHE: dict[str, tuple[int, bool]] = {}
+# path -> ((size, mtime_ns), verified_ok)
+_VERIFY_CACHE: dict[str, tuple[tuple[int, int], bool]] = {}
 
 
 class LedgerError(RuntimeError):
@@ -127,20 +126,22 @@ def _release_lock(fd) -> None:
 def _verify_cached(path: Path) -> bool:
     """True when the on-disk chain is internally consistent.
 
-    Re-verified only when the file size changed since the last check in
-    this process (every legal writer goes through append(), which is the
-    only writer that can change size while holding the lock).
+    Re-verified whenever (size, mtime) changed since the last check in this
+    process — every legal writer goes through append()/repair(), so any
+    in-place edit registers. (verify()/repair(), the audit paths, always
+    re-verify fully regardless of this cache.)
     """
     try:
-        size = path.stat().st_size
+        st = path.stat()
     except OSError:
         return False
+    key = (st.st_size, st.st_mtime_ns)
     cached = _VERIFY_CACHE.get(str(path))
-    if cached and cached[0] == size:
+    if cached and cached[0] == key:
         return cached[1]
     problems = _chain_problems(read_entries(path))
     ok = not problems
-    _VERIFY_CACHE[str(path)] = (size, ok)
+    _VERIFY_CACHE[str(path)] = (key, ok)
     return ok
 
 
@@ -237,7 +238,7 @@ def repair(path: Path | None = None) -> dict:
                 # first invalid entry: stop, keep prefix only
                 dropped_lines += len(raw_lines) - (i - 1)
                 break
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         backup = path.with_name(f"{path.name}.broken-{stamp}")
         path.replace(backup)
         with path.open("x", encoding="utf-8") as handle:
