@@ -1,37 +1,41 @@
-# Meridian - 90-second demo script
+# Meridian - 90-second demo video
 
-Everything below is pre-baked. Rehearse once, record once. Do not type on
-camera beyond the lines marked.
+`meridian-demo.mp4` (66s, 1920x1080 @ 30fps) ships the full story: the bug in
+`examples/demo-order-pipeline/orders.py`, the scan, the failed check with both
+anchored findings, the half-fix that stays red, and the two-line fix that turns
+it green - followed by the ledger and the repo link.
 
-**Setup (before the take):**
+It is a generated video, built with HyperFrames (HTML rendered to frames), not
+a screen recording. Every terminal line on screen is the plugin's real output.
 
-- Terminal font >= 18pt, dark theme, window about 110x30.
-- A clone of the repo at `meridian/examples/demo-order-pipeline/`.
-- A GUI chat window running Hermes with Meridian enabled, side by side with the terminal.
-- `sed -n '70,85p' orders.py` ready in a spare tab (the `refund()` function).
-- The demo repo ships `.meridian.yaml` with the two harmful edges deliberately
-  excluded: `draft -> refunded` (deny) and `unverified_shipping -> shipped`.
+**How it was made**
 
-**Beat table:**
+- Script and story beats: `SPEC.md` (this directory has only the how-to; the
+  HyperFrames project lives outside this repo to keep the plugin small)
+- Voice: en-US-AndrewNeural (edge TTS), lines generated to `assets/`
+- Composition: 1920x1080, 8 scenes, captions timed to the VO cues, quiet
+  ambient bed and two SFX hits, `window.__timelines` seeks a paused GSAP timeline
+- Render: `npx hyperframes render --quality delivery` (headless Chrome + ffmpeg)
 
-| t     | Action                                                                            | Voice-over (short)                          |
-| ----- | --------------------------------------------------------------------------------- | ------------------------------------------- |
-| 0:00  | Terminal: `ls` shows `orders.py` and `.meridian.yaml`                             | "Two files. A checkout flow. No machine docs." |
-| 0:05  | GUI chat: "Show me the state machines in this repo and check them."               | "Hermes, on the right."                     |
-| 0:10  | Hermes calls `meridian_scan` -> table of 4 machines                               | "Meridian maps every status field. AST, not vibes." |
-| 0:18  | Hermes calls `meridian_verify` -> 2 violations + unreachable state                 | "Two findings: a dead branch nobody can enter, and a refund that never moved money." |
-| 0:30  | Terminal view: `sed -n '74,80p' orders.py` highlights the `DRAFT` in the tuple     | "Line 78. The guard had DRAFT in the refund list." |
-| 0:40  | Back to chat: "Fix the refund bug." Hermes writes the fix, saves.                 | "Watch Hermes fix it."                      |
-| 0:50  | Ask: "did that edit break anything?" Hermes calls `meridian_verify` -> still red on `orders.py:62` | "It answers with evidence, not confidence." |
-| 0:58  | Terminal: `hermes meridian check` -> still red: `orders.py:62 ... [not-allowed]`   | "One fix is not enough. It refuses to rubber-stamp." |
-| 1:08  | Hermes removes the dead `UNVERIFIED_SHIPPING` branch, `hermes meridian check` -> OK | "Green. That check now runs in CI."          |
-| 1:16  | `hermes meridian ledger verify` -> "OK - N entries"                                | "Every verdict, chained. Nobody edits it quietly." |
-| 1:22  | `meridian_diagram Order.status` for one second (Mermaid)                           | "Also: the diagram, generated from the code." |
-| 1:30  | End card: MERIDIAN - "The machines your codebase already has."                     | "Meridian. Open source. MIT."               |
+**Reproduce**
 
-**Post to X** with the video, tag `@NousResearch`, mention the catalog PR.
+```bash
+npx hyperframes init meridian-demo --example blank --skip-skills
+cd meridian-demo
+npm install hyperframes @fontsource/space-grotesk @fontsource/inter @fontsource/jetbrains-mono
+# copy index.html + assets/ from the shipped project, then
+npx hyperframes check --json
+npx hyperframes snapshot --at 1.4,9,25,41,56.7
+npx hyperframes render --quality delivery
+```
 
-**Insurance (if anything fails live):**
+**Design notes**
 
-- `python3 orders.py` runs the happy path with no Meridian at all.
-- `python3 -m unittest discover -s tests -v` proves the plugin suite is green (28 checks).
+- Captions match the spoken lines exactly (word-for-word) and sit on a scrim
+  for legibility over the dot-grid ground.
+- Two violations on screen are the demo repo's real findings: `orders.py:62`
+  (`unverified_shipping -> shipped`, not-allowed) and `orders.py:78`
+  (`draft -> refunded`, deny). Both are anchored to the file in the fixture.
+- The auto-verify hook beat is not in the video: it depends on the agent's
+  runtime and cannot be guaranteed on camera. The interactive re-verify beat
+  in scene 5 covers the same point deterministically.
