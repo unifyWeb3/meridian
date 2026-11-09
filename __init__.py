@@ -254,6 +254,10 @@ def _cli_main(args):
         if payload.get("error"):
             print(f"meridian check: {payload['error']}")
             return 2
+        if not payload.get("spec"):
+            # A CI gate that passes because the spec is missing is a false green.
+            print(f"meridian check: no .meridian.yaml at or above {root} — nothing to enforce (exit 2)")
+            return 2
         if payload["violation_count"]:
             print(f"meridian check FAILED — {payload['violation_count']} violation(s):")
             for v in payload["violations"]:

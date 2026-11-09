@@ -214,6 +214,7 @@ machines:
             return _cli_main(args)
 
         self.assertEqual(run("check", "--root", str(DEMO)), 1)
+        self.assertEqual(run("check", "--root", str(self.tmp)), 2)  # no spec → error, never a false green
         self.assertEqual(run("scan", "--root", str(DEMO)), None)  # returns None → rc 0
         self.assertEqual(run("ledger", "verify"), None)
 
