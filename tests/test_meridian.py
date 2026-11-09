@@ -15,7 +15,16 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO.parent))
+# Import the plugin as package "meridian" regardless of the checkout's
+# directory name (CI may clone into anything).
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location(
+    "meridian", REPO / "__init__.py", submodule_search_locations=[str(REPO)]
+)
+_module = importlib.util.module_from_spec(_spec)
+sys.modules["meridian"] = _module
+_spec.loader.exec_module(_module)
 
 from meridian.analyzer import graph, ledger, spec as spec_mod  # noqa: E402
 from meridian.analyzer.scan import scan_root  # noqa: E402
