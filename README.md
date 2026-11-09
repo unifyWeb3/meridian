@@ -1,5 +1,7 @@
 # Meridian
 
+![Meridian — the state machines your codebase never wrote down](docs/banner.svg)
+
 **Find the state machines your codebase never wrote down — and prove every one of them.**
 
 Every `status`, `state`, `phase`, `stage`, `step` and `disposition` field in your
@@ -123,8 +125,7 @@ the analyzer is pure deterministic code.
 ## What Meridian does not do
 
 - It cannot know domain legality. It enforces the spec you accept; review the draft.
-- JS/TS evidence is lexical and labeled by confidence — a JavaScript `ts.AST` pass is
-  on the roadmap, but a Python AST scan is the authoritative path today.
+- JS/TS evidence is lexical and labeled by confidence — the Python AST pass is the authoritative path today; deeper JS analysis is on the roadmap.
 - Unguarded writes are suspicions, not guilty verdicts.
 - Nested function scopes fold into their parent (documented limitation).
 

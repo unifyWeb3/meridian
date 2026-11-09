@@ -335,9 +335,12 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
                 walk_block(stmt.body, [*frames, frame])
                 walk_block(stmt.orelse, frames)
                 return
-            if isinstance(stmt, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
+            if isinstance(stmt, (ast.For, ast.AsyncFor)):
                 walk_block(stmt.body, frames)
                 walk_block(stmt.orelse, frames)
+                return
+            if isinstance(stmt, (ast.With, ast.AsyncWith)):
+                walk_block(stmt.body, frames)
                 return
             if isinstance(stmt, ast.Assign):
                 for target in stmt.targets:

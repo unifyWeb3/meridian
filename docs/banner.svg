@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 750" width="1500" height="750">
+  <defs>
+    <pattern id="dots" width="34" height="34" patternUnits="userSpaceOnUse">
+      <circle cx="2.5" cy="2.5" r="2.5" fill="#1B2127"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#5EC8C0"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#E0A458"/>
+    </marker>
+  </defs>
+
+  <rect width="1500" height="750" fill="#101418"/>
+  <rect width="1500" height="750" fill="url(#dots)"/>
+
+  <!-- left: type -->
+  <rect x="90" y="452" width="150" height="10" fill="#E0A458"/>
+  <text x="90" y="235" font-family="Arial, Helvetica, sans-serif" font-size="132" font-weight="800" letter-spacing="8" fill="#E8E6DF">MERIDIAN</text>
+  <text x="90" y="325" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="400" fill="#9BA3AB">The state machines your codebase</text>
+  <text x="90" y="370" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="400" fill="#9BA3AB">never wrote down.</text>
+  <text x="90" y="560" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" letter-spacing="6" fill="#5EC8C0">HERMES AGENT PLUGIN</text>
+
+  <!-- right: state chart motif -->
+  <g font-family="Arial, Helvetica, sans-serif" font-size="16" fill="#E8E6DF" text-anchor="middle">
+    <!-- happy-path edges -->
+    <line x1="950" y1="150" x2="1035" y2="196" stroke="#5EC8C0" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <line x1="1132" y1="232" x2="1146" y2="342" stroke="#5EC8C0" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <line x1="1112" y1="415" x2="1025" y2="487" stroke="#5EC8C0" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+    <!-- the forbidden edge, highlighted: draft --> refunded -->
+    <path d="M 905 180 Q 800 370 1010 565" fill="none" stroke="#E0A458" stroke-width="3" stroke-dasharray="10 8" marker-end="url(#arrowAmber)"/>
+    <text x="778" y="380" font-size="15" fill="#E0A458" text-anchor="end" transform="rotate(-63 778 380)">draft → refunded</text>
+
+    <!-- nodes -->
+    <circle cx="915" cy="145" r="40" fill="#101418" stroke="#5EC8C0" stroke-width="2.5"/>
+    <text x="915" y="151">draft</text>
+
+    <circle cx="1075" cy="205" r="40" fill="#101418" stroke="#5EC8C0" stroke-width="2.5"/>
+    <text x="1075" y="211">paid</text>
+
+    <circle cx="1152" cy="382" r="42" fill="#101418" stroke="#5EC8C0" stroke-width="2.5"/>
+    <text x="1152" y="388">shipped</text>
+
+    <circle cx="975" cy="520" r="42" fill="#101418" stroke="#5EC8C0" stroke-width="2.5"/>
+    <text x="975" y="526">delivered</text>
+
+    <circle cx="1028" cy="640" r="40" fill="#101418" stroke="#E0A458" stroke-width="2.5" stroke-dasharray="7 6"/>
+    <text x="1028" y="646" fill="#E0A458">refunded</text>
+  </g>
+</svg>
