@@ -187,6 +187,36 @@ machines:
         self.assertEqual(machine.allow, {("draft", "done")})
         self.assertEqual(machine.deny, {("done", "draft")})
 
+    def test_mini_yaml_two_machines_keep_separate(self):
+        """Regression: the old parser merged machine 2 into machine 1 and
+        dropped both allow/deny sets (Hermes's venv has no PyYAML, so this
+        subset parser is the production path for .meridian.yaml)."""
+        text = Path(DEMO / ".meridian.yaml").read_text(encoding="utf-8")
+        spec = spec_mod._coerce_spec(_mini_yaml(text), Path("demo.yaml"))
+        ids = [m.id for m in spec.machines]
+        self.assertEqual(ids, ["Order.status", "Order.payment_status"])
+        order = next(m for m in spec.machines if m.id == "Order.status")
+        payment = next(m for m in spec.machines if m.id == "Order.payment_status")
+        self.assertIn(("paid", "refunded"), order.allow)
+        self.assertIn(("delivered", "returned"), order.allow)
+        self.assertEqual(order.deny, {("draft", "refunded")})
+        self.assertEqual(payment.deny, set())
+        self.assertIn(("pending", "succeeded"), payment.allow)
+
+    def test_cli_exit_codes(self):
+        from meridian import _setup_cli, _cli_main
+        import argparse
+
+        def run(*argv):
+            parser = argparse.ArgumentParser()
+            _setup_cli(parser)
+            args = parser.parse_args(list(argv))
+            return _cli_main(args)
+
+        self.assertEqual(run("check", "--root", str(DEMO)), 1)
+        self.assertEqual(run("scan", "--root", str(DEMO)), None)  # returns None → rc 0
+        self.assertEqual(run("ledger", "verify"), None)
+
     def test_json_in_yaml_loader(self):
         payload = {"version": 1,
                    "machines": [{"id": "A.status", "states": ["x", "y"],

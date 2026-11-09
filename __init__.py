@@ -231,7 +231,7 @@ def _handle_meridian(raw_args: str) -> str:
 
 
 # ----------------------------------------------------------- cli
-def _cli_main(args) -> None:
+def _cli_main(args):
     cmd = getattr(args, "meridian_command", None) or "help"
     root = Path(getattr(args, "root", ".") or ".").expanduser().resolve()
     if cmd == "scan":
@@ -253,14 +253,23 @@ def _cli_main(args) -> None:
                                     strict=getattr(args, "strict", False) or _STRICT)
         if payload.get("error"):
             print(f"meridian check: {payload['error']}")
-            raise SystemExit(2)
+            return 2
         if payload["violation_count"]:
             print(f"meridian check FAILED — {payload['violation_count']} violation(s):")
             for v in payload["violations"]:
                 print(f"  {v['anchor']}  {v['src']} -> {v['dst']}  ({v['via']})  [{v['rule']}]")
-            raise SystemExit(1)
+            try:
+                ledger.append("check", {"root": str(root), "ok": False,
+                                        "violation_count": payload["violation_count"]})
+            except Exception:
+                pass
+            return 1
         print(f"meridian check OK — {len(payload['verdicts'])} machine(s), 0 violations")
-        return
+        try:
+            ledger.append("check", {"root": str(root), "ok": True, "violation_count": 0})
+        except Exception:
+            pass
+        return 0
     if cmd == "report":
         payload = tools._verify_all(root, machine_id=None, strict=False)
         report = tools._report_markdown(root, payload)
@@ -281,7 +290,7 @@ def _cli_main(args) -> None:
         machine = next((m for m in result.machines if m.id == machine_id), None)
         if machine is None:
             print(f"machine not found: {machine_id}")
-            raise SystemExit(2)
+            return 2
         fmt = getattr(args, "format", "mermaid")
         if fmt == "mermaid":
             print(tools._mermaid(machine))
@@ -304,14 +313,14 @@ def _cli_main(args) -> None:
                 path = write_spec(root, draft_spec(result.machines), force=getattr(args, "force", False))
             except Exception as exc:
                 print(f"meridian spec: {exc}")
-                raise SystemExit(2)
+                return 2
             print(f"wrote {path}")
             return
         if action == "show":
             spec = repo_mod.find_spec(root)
             if not spec:
                 print(f"no .meridian.yaml at or above {root}")
-                raise SystemExit(2)
+                return 2
             print(spec.read_text(encoding="utf-8"))
             return
     if cmd == "ledger":
@@ -331,7 +340,7 @@ def _cli_main(args) -> None:
                 print(f"meridian ledger BROKEN — {status['entries']} entries:")
                 for problem in status["problems"]:
                     print(f"  - {problem}")
-                raise SystemExit(1)
+                return 1
             return
         if action == "stats":
             print(json.dumps(ledger.stats(), indent=2))

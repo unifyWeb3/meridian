@@ -74,15 +74,32 @@ def _parse_inline_list(raw: str) -> list[Any] | None:
 
 
 def _mini_yaml(text: str) -> dict[str, Any]:
-    """Subset for the Meridian schema: top-level `version`/`machines`,
-    machines as a list of maps with scalar or list values."""
-    root: dict[str, Any] = {}
-    current: dict[str, Any] | None = None
-    machine_list: list[dict[str, Any]] | None = None
-    pending_key: str | None = None
+    """Subset parser for exactly the Meridian spec schema:
 
+        version: 1
+        machines:
+          - id: Order.status          # indent 2  → new machine
+            states: [a, b]            # indent 4  → machine key
+            allow:                    # indent 4, empty value → open a list
+              - [a, b]                # indent 6+ → list item for that key
+    """
     def indent_of(line: str) -> int:
         return len(line) - len(line.lstrip(" "))
+
+    def inline_or_scalar(value: str):
+        return _parse_inline_list(value) if value.startswith("[") else _parse_scalar(value)
+
+    def kv(stripped: str, lineno: int) -> tuple[str, str]:
+        key, sep, value = stripped.partition(":")
+        if not sep:
+            raise SpecError(f"line {lineno}: expected 'key: value'")
+        return key.strip(), value.strip()
+
+    root: dict[str, Any] = {}
+    machine_list: list[dict[str, Any]] | None = None
+    current: dict[str, Any] | None = None
+    pending_key: str | None = None
+    in_machines = False
 
     for lineno, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.rstrip()
@@ -90,57 +107,49 @@ def _mini_yaml(text: str) -> dict[str, Any]:
             continue
         indent = indent_of(line)
         stripped = line.strip()
-        if indent == 0 and not stripped.startswith("-"):
-            key, sep, value = stripped.partition(":")
-            if not sep:
-                raise SpecError(f"line {lineno}: expected 'key: value'")
-            key = key.strip()
-            value = value.strip()
-            if value:
-                root[key] = _parse_inline_list(value) if value.startswith("[") else _parse_scalar(value)
-                pending_key = None
-            else:
-                if key == "machines":
-                    machine_list = []
-                    root["machines"] = machine_list
-                    current = None
-                pending_key = key
+
+        if indent == 0:
+            key, value = kv(stripped, lineno)
+            if key == "machines" and value == "":
+                machine_list = []
+                root["machines"] = machine_list
+                in_machines, current, pending_key = True, None, None
+                continue
+            in_machines = False
+            root[key] = inline_or_scalar(value) if value else None
             continue
-        if stripped.startswith("- "):
-            item = stripped[2:].strip()
-            if indent >= 2 and machine_list is not None and pending_key == "machines":
+
+        if in_machines:
+            if indent == 2 and stripped.startswith("- "):
+                # new machine entry: "- key: value" (usually "- id: X")
                 current = {}
-                machine_list.append(current)
-                kv = item.partition(":")
-                if kv[1]:
-                    current[kv[0].strip()] = _parse_inline_list(kv[2]) if kv[2].strip().startswith("[") else _parse_scalar(kv[2])
+                machine_list.append(current)  # type: ignore[union-attr]
+                key, value = kv(stripped[2:].strip(), lineno)
+                current[key] = inline_or_scalar(value)
                 pending_key = None
                 continue
-            if current is None:
-                raise SpecError(f"line {lineno}: '-' item with no parent")
-            value: Any
-            parsed_list = _parse_inline_list(item)
-            value = parsed_list if parsed_list is not None else _parse_scalar(item)
-            if pending_key:
-                current.setdefault(pending_key, [])
-                if isinstance(current[pending_key], list):
-                    current[pending_key].append(value)
-            else:
-                raise SpecError(f"line {lineno}: list item with no key")
+            if indent == 4 and not stripped.startswith("- "):
+                if current is None:
+                    raise SpecError(f"line {lineno}: key before any machine entry")
+                key, value = kv(stripped, lineno)
+                if value:
+                    current[key] = inline_or_scalar(value)
+                    pending_key = None
+                else:
+                    current[key] = []
+                    pending_key = key
+                continue
+            if indent >= 6 and stripped.startswith("- "):
+                if current is None or pending_key is None:
+                    raise SpecError(f"line {lineno}: list item with no open list")
+                item = stripped[2:].strip()
+                current[pending_key].append(inline_or_scalar(item))
+                continue
+            raise SpecError(f"line {lineno}: unexpected indent/content in machines block")
             continue
-        # subsequent keys of a machine entry
-        kv = stripped.partition(":")
-        if not kv[1]:
-            raise SpecError(f"line {lineno}: expected 'key: value'")
-        key, value_raw = kv[0].strip(), kv[2].strip()
-        if current is None:
-            raise SpecError(f"line {lineno}: key outside of a machine entry")
-        if value_raw:
-            current[key] = _parse_inline_list(value_raw) if value_raw.startswith("[") else _parse_scalar(value_raw)
-            pending_key = None
-        else:
-            current[key] = []
-            pending_key = key
+
+        raise SpecError(f"line {lineno}: content outside of 'machines'")
+
     return root
 
 
