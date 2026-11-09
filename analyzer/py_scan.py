@@ -32,7 +32,7 @@ def _is_state_name(name: str) -> bool:
 
 
 def _is_state_literal(value: str) -> bool:
-    return bool(_LITERAL.match(value)) and not value.isupper()
+    return bool(_LITERAL.match(value))
 
 
 def _literal_str(node: ast.AST | None) -> str | None:
@@ -86,10 +86,15 @@ def _enum_table(parsed: dict[str, ast.Module | None]) -> dict[str, dict[str, str
     return table
 
 
-def _constant_table(parsed: dict[str, ast.Module | None]) -> dict[str, str]:
-    """module-level NAME = "literal" for resolving writes like self.status = PAID."""
-    table: dict[str, str] = {}
-    for tree in parsed.values():
+def _constant_table(parsed: dict[str, ast.Module | None]) -> tuple[dict[str, str], list[str]]:
+    """module-level NAME = "literal" for resolving writes like self.status = PAID.
+
+    Drops names defined in more than one module with different values
+    (silent shadowing is how verdicts get fabricated); ambiguous names are
+    reported, never silently resolved.
+    """
+    per_name: dict[str, dict[str, str]] = {}
+    for rel, tree in parsed.items():
         if tree is None:
             continue
         for stmt in tree.body:
@@ -99,8 +104,16 @@ def _constant_table(parsed: dict[str, ast.Module | None]) -> dict[str, str]:
                 and isinstance(stmt.targets[0], ast.Name)
                 and (value := _literal_str(stmt.value)) is not None
             ):
-                table[stmt.targets[0].id] = value
-    return table
+                per_name.setdefault(stmt.targets[0].id, {})[rel] = value
+    table: dict[str, str] = {}
+    dropped: list[str] = []
+    for name, defs in per_name.items():
+        distinct = set(defs.values())
+        if len(distinct) == 1:
+            table[name] = next(iter(distinct))
+        else:
+            dropped.append(name)
+    return table, dropped
 
 
 def _resolve_value(
@@ -130,8 +143,10 @@ def _resolve_value(
             if hits is not None and enum_name:
                 hits.append(enum_name)
             return members[node.attr]
-        if _is_state_literal(node.attr.lower()):
-            return node.attr.lower()  # Enum member used as its own value
+        # Not an enum member and not a plain literal: the value cannot be
+        # anchored — never fabricate a state from an attribute name.
+        if hits is not None and enum_name and _LITERAL.match(node.attr.lower()):
+            hits.append(enum_name)  # alphabet still applies; value unverified
         return None
     if isinstance(node, ast.Call) and node.args:  # str(Enum.X)
         return _resolve_value(node.args[0], enums, constants, hits)
@@ -156,39 +171,51 @@ def _compare_frame(
     """{field: positive literal constraints} from one branch test.
 
     Only Eq/In produce constraints (the branch runs because the test was
-    true). NotEq excludes values — a constraint we cannot enumerate — so
-    it is ignored rather than guessed.
+    true). NotEq excludes values — a constraint we cannot enumerate — so it
+    is ignored. Compares nested under `Not` are NOT constraints (the branch
+    runs because the equality was false) and are skipped entirely.
     """
     frame: dict[str, set[str]] = {}
-    for cmp_node in ast.walk(test):
-        if not isinstance(cmp_node, ast.Compare):
-            continue
-        sides = [cmp_node.left, *cmp_node.comparators]
-        for i, op in enumerate(cmp_node.ops):
-            if not isinstance(op, (ast.Eq, ast.In)):
-                continue
-            left, right = sides[i], sides[i + 1]
-            for field_side, literal_side in ((left, right), (right, left)):
-                field = _field_side(field_side)
-                if field is None:
-                    continue
-                candidates: list[ast.AST] = []
-                if isinstance(op, ast.In) and isinstance(literal_side, (ast.Tuple, ast.List, ast.Set)):
-                    candidates.extend(literal_side.elts)
-                else:
-                    candidates.append(literal_side)
-                for cand in candidates:
-                    value = _resolve_value(cand, enums, constants, hits)
-                    if value:
-                        frame.setdefault(field, set()).add(value)
+
+    def visit(node: ast.AST, negated: bool) -> None:
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            visit(node.operand, not negated)
+            return
+        if isinstance(node, ast.Compare):
+            if not negated:
+                sides = [node.left, *node.comparators]
+                for i, op in enumerate(node.ops):
+                    if not isinstance(op, (ast.Eq, ast.In)):
+                        continue
+                    left, right = sides[i], sides[i + 1]
+                    for field_side, literal_side in ((left, right), (right, left)):
+                        field = _field_side(field_side)
+                        if field is None:
+                            continue
+                        candidates: list[ast.AST] = []
+                        if isinstance(op, ast.In) and isinstance(literal_side, (ast.Tuple, ast.List, ast.Set)):
+                            candidates.extend(literal_side.elts)
+                        else:
+                            candidates.append(literal_side)
+                        for cand in candidates:
+                            value = _resolve_value(cand, enums, constants, hits)
+                            if value:
+                                frame.setdefault(field, set()).add(value)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child, negated)
+
+    visit(test, False)
     return frame
 
 
 def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[str]]:
     parsed = _iter_files(py_files, root)
     enums = _enum_table(parsed)
-    constants = _constant_table(parsed)
+    constants, dropped_constants = _constant_table(parsed)
     warnings: list[str] = []
+    for name in dropped_constants:
+        warnings.append(f"constant {name} defined with different values in multiple modules — not used to resolve writes")
     machines: dict[str, Machine] = {}
     enum_hits: dict[str, set[str]] = {}
 
@@ -364,6 +391,19 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
                 if isinstance(stmt, ast.stmt):
                     visit_stmt(stmt, frames)
 
+        # nested scopes are not analyzed (documented); disclose the writers
+        for sub in ast.walk(fn):
+            if sub is fn:
+                continue
+            if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                name = getattr(sub, "name", "<lambda>")
+                for inner in ast.walk(sub):
+                    if isinstance(inner, ast.Assign):
+                        for t in inner.targets:
+                            if isinstance(t, ast.Attribute) and _is_state_name(t.attr):
+                                warnings.append(
+                                    f"{rel}:{sub.lineno}: nested scope '{name}' writes state field "
+                                    f"'{t.attr}' — not analyzed")
         walk_block(fn.body, [])
 
     for rel, tree in parsed.items():
@@ -400,6 +440,8 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
         machine.notes.append("enum-only machine: no write sites anchored yet")
         machines[machine_id] = machine
 
+    kept: list[Machine] = []
+    dropped = 0
     for machine in machines.values():
         contributing = enum_hits.get(machine.id, set())
         for enum_name in sorted(contributing):
@@ -409,6 +451,14 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
                 machine.notes.append(f"state alphabet from enum {enum_name}")
         machine.states = sorted({s for s in machine.states if _is_state_literal(s)})
         machine.initial = sorted({s for s in machine.initial if s in machine.states})
+        if not machine.states and not machine.transitions and not machine.initial:
+            dropped += 1
+            continue
+        kept.append(machine)
+    machines = {m.id: m for m in kept}
+    if dropped:
+        warnings.append(f"{dropped} machine(s) produced no anchored states and were dropped")
+    for machine in kept:
         seen: set[tuple[str | None, str, str, str, int]] = set()
         deduped: list[Transition] = []
         for t in machine.transitions:

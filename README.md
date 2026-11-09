@@ -21,11 +21,11 @@ transitions you accept — in the agent, in your terminal, and in CI.
 ```
 meridian_scan        → discover machines: states, initial states, transitions (file:line),
                        unreachable states, dead states, unguarded writes
-meridian_verify      → edge-level verdicts; spec violations with anchors
-meridian_diagram     → Mermaid stateDiagram-v2 or XState v5 JSON (code-accurate)
+meridian_verify      → edge-level verdicts; spec violations with anchors; coverage gaps flagged
+meridian_diagram     → Mermaid stateDiagram-v2 or XState v5 JSON
 meridian_spec        → draft / accept / show / check the .meridian.yaml spec (CI primitive)
 meridian_ledger      → SHA-256 hash-chained, append-only evidence ledger of every verdict
-meridian_report      → self-contained Markdown report with the ledger head
+meridian_report      → self-contained Markdown report (with an embedded Mermaid diagram)
 ```
 
 Plus `/meridian` in-session, `hermes meridian <scan|verify|check|report|diagram|spec|ledger>`
@@ -99,20 +99,26 @@ hermes meridian ledger verify     # re-verify the evidence chain
    (`status|state|phase|stage|step|disposition|lifecycle|mode|workflow|fulfillment`)
    become machines; writes inside `if`/`elif`/`while` branches are attributed to
    exactly those branches — never to a made-up source. Initial states come from
-   constructors and class-level defaults. Dead states (never assigned),
-   unreachable states (no path from initial), and unguarded writes are
-   first-class findings.
+   constructors and class-level defaults. Unreachable states (no path from a
+   known initial state) and dead states (never constructed) are first-class
+   findings. Nested `def`/`lambda` scopes are **not** analyzed — a warning
+   lists every one that writes a state field.
 2. **Verify (deterministic, spec-gated).** `.meridian.yaml` is the enforcement
    input: an `allow`/`deny` edge list per machine, drafted from observed anchored
    transitions, reviewed by a human or the agent, accepted explicitly. Then
    `check` is exact: any anchored edge denied or not in `allow` is a violation
-   with a `file:line` anchor; unguarded writes are warnings (violations with
-   `--strict`); `deny` always wins over `allow`.
-3. **Audit (hash-chained).** Every scan, verdict, spec acceptance and check is
-   an entry in `$HERMES_HOME/plugin-data/meridian/ledger.jsonl`, each entry
-   committing to the previous entry's SHA-256. `meridian_ledger verify`
-   recomputes the chain; appending to a broken chain is refused. The ledger
-   stores machine ids, verdict counts and anchors — never file contents.
+   with a `file:line` anchor; unguarded non-constructor writes are warnings
+   (violations with `--strict`); constructor writes are checked against the
+   spec's `initial` in strict mode. `deny` always wins over `allow`. A spec
+   that covers nothing, or a discovered machine outside the spec, fails the
+   check — no false greens.
+3. **Audit (hash-chained).** Every scan, verdict, spec acceptance, check and
+   repair is an entry in `$HERMES_HOME/plugin-data/meridian/ledger.jsonl`, each
+   entry committing to the previous entry's SHA-256. `meridian_ledger verify`
+   recomputes the whole chain; `meridian_ledger repair` is the explicit
+   recovery for a torn final line (keeps the valid prefix, keeps a backup).
+   Appends are serialized through a sidecar lock. The ledger stores machine
+   ids, verdict counts and anchors — never file contents.
 
 ### Where the AI fits
 
@@ -122,17 +128,47 @@ reports is model-asserted, and nothing enters the spec without passing the
 acceptance gate. If no model is in play (CI, cron), everything still works:
 the analyzer is pure deterministic code.
 
+**Capabilities, honestly.** Zero dependencies (stdlib only — there is no
+`pyproject.toml` and nothing to install). Zero network calls, zero model
+calls, zero telemetry, zero shell-outs, no background processes. Python ≥ 3.9.
+Works identically offline/in CI. Runs bounded: per-file size cap (512 KB),
+global file cap per scan (5000, truncation is reported), hook budget (400-file
+and 10-file caps).
+
+## Configuration
+
+`config.yaml` under `plugins.entries.meridian.settings`:
+
+- `auto_verify` (default `true`) — re-scan state-machine files right after the
+  agent edits them and surface spec violations in the next turn. Advisory; never
+  blocks, vetoes or rewrites anything.
+- `strict` (default `false`) — unguarded non-constructor writes count as
+  violations in `meridian_spec check` / `hermes meridian check --strict`.
+
+Environment variables (all optional):
+
+- `HERMES_HOME` — Hermes profile root used for the plugin data dir (ledger).
+  Default `~/.hermes`.
+- `MERIDIAN_ROOT` — default repository root for the tools when they cannot
+  learn one from the session. Overrides the session cwd when set.
+
 ## What Meridian does not do
 
 - It cannot know domain legality. It enforces the spec you accept; review the draft.
-- JS/TS evidence is lexical and labeled by confidence — the Python AST pass is the authoritative path today; deeper JS analysis is on the roadmap.
+- JS/TS evidence is lexical: transitions are always unguarded (TS never
+  fabricates a source state), union-type alphabets are exact, other evidence is
+  labeled `low` confidence. The Python AST pass is authoritative for `.py`.
 - Unguarded writes are suspicions, not guilty verdicts.
-- Nested function scopes fold into their parent (documented limitation).
+- Nested function/lambda scopes are not analyzed; warnings list the writers.
+- Unreachable states are only reported when an initial state is known
+  (otherwise the report says so instead of showing an empty list).
+- Scans see one tree at a time; extremely large repos are truncated at the
+  cap, and the truncation is printed, not silent.
 
 ## Develop & test
 
 ```bash
-python3 -m unittest discover -s tests -v   # 15 tests, stdlib only
+python3 -m unittest discover -s tests -v   # stdlib only
 ```
 
 The plugin is a single directory: `plugin.yaml` + `__init__.py` + `analyzer/`

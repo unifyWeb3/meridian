@@ -34,12 +34,12 @@ MERIDIAN_VERIFY = {
     "description": (
         "Verify discovered machines against the repository and, when a "
         ".meridian.yaml spec exists, against its allowed/forbidden transition edges. "
-        "Detects: unreachable states (no path from the initial state), dead states "
-        "(never written), unguarded writes (no same-function comparison on the "
-        "field) and hard spec violations (anchored src->dst edges that are denied "
-        "or not allowed). Call this after every edit that touches a machine's "
-        "source files — especially when you (or the user) just changed lifecycle "
-        "code — and before claiming a bug is fixed."
+        "Detects unreachable and dead states (when an initial state is known), "
+        "unguarded writes, and allow/deny edge violations with file:line anchors. "
+        "Call this after any edit that touches a machine's source files — "
+        "especially after you change lifecycle code — and before claiming a bug "
+        "is fixed. Note: `ok` is false when a discovered machine is not covered "
+        "by the spec (it is unenforced, not necessarily broken)."
     ),
     "parameters": {
         "type": "object",
@@ -51,7 +51,7 @@ MERIDIAN_VERIFY = {
             },
             "strict": {
                 "type": "boolean",
-                "description": "When true, unguarded writes count as violations instead of warnings.",
+                "description": "When true, unguarded non-constructor writes count as violations.",
             },
         },
         "required": [],
@@ -62,9 +62,9 @@ MERIDIAN_DIAGRAM = {
     "name": "meridian_diagram",
     "description": (
         "Render a machine as Mermaid stateDiagram-v2 text, or export it as "
-        "XState v5 JSON. Every transition is labeled with the function that "
-        "performs it, so the diagram is code-accurate, not aspirational. "
-        "Use 'xstate' output when the user wants to wire the machine up; "
+        "XState v5 JSON. Transitions are labeled with the function that "
+        "performs them. In XState output, event names are generated placeholders "
+        "— wire your own before using it in production. "
         "Mermaid for docs, tickets and PR descriptions."
     ),
     "parameters": {
@@ -94,8 +94,10 @@ MERIDIAN_SPEC = {
         "accepting); 'accept' writes it (refuses to overwrite without force, keeps "
         "a .bak); 'show' prints the current spec; 'check' is the CI primitive: "
         "scan + verify against the accepted spec and report violations with "
-        "file:line anchors. A spec is what turns 'this looks wrong' into 'this is "
-        "forbidden'."
+        "file:line anchors. 'check' fails when the spec does not cover every "
+        "discovered machine (pass allow_uncovered=true to waive that), and "
+        "fails outright when the spec enforces nothing at all. A spec is "
+        "what turns 'this looks wrong' into 'this is forbidden'."
     ),
     "parameters": {
         "type": "object",
@@ -112,7 +114,11 @@ MERIDIAN_SPEC = {
             },
             "strict": {
                 "type": "boolean",
-                "description": "For 'check': unguarded writes count as violations.",
+                "description": "For 'check': unguarded non-constructor writes count as violations.",
+            },
+            "allow_uncovered": {
+                "type": "boolean",
+                "description": "For 'check': waive the requirement that every discovered machine be in the spec.",
             },
         },
         "required": ["action"],
@@ -126,7 +132,9 @@ MERIDIAN_LEDGER = {
         "hash-chained audit of every scan, verdict, spec acceptance and check "
         "Meridian performed. 'verify' recomputes the chain and reports the first "
         "broken entry if anybody quietly edited history; 'show' lists recent "
-        "entries; 'stats' shows event counts. The ledger records machine ids, "
+        "entries; 'stats' shows event counts; 'repair' drops a torn/corrupt "
+        "tail, keeps the valid prefix and keeps a backup (needed only after a "
+        "crash mid-write). The ledger records machine ids, "
         "verdict counts and file:line anchors — never file contents."
     ),
     "parameters": {
@@ -134,7 +142,7 @@ MERIDIAN_LEDGER = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["show", "verify", "stats"],
+                "enum": ["show", "verify", "stats", "repair"],
                 "description": "Which ledger operation to run.",
             },
             "limit": {
@@ -169,4 +177,3 @@ MERIDIAN_REPORT = {
     },
 }
 
-ALL_TOOLS = [MERIDIAN_SCAN, MERIDIAN_VERIFY, MERIDIAN_DIAGRAM, MERIDIAN_SPEC, MERIDIAN_LEDGER, MERIDIAN_REPORT]

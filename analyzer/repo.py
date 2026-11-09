@@ -1,7 +1,8 @@
 """Repo walking + storage helpers for Meridian.
 
-Pure stdlib. No network, no shell, no writes outside the target repo
-(.meridian/) and the plugin data directory.
+Pure stdlib. No network, no shell. Meridian writes only: `.meridian.yaml`
+(via `spec accept`), paths the user names explicitly (`--out`), and its
+plugin data directory (the ledger and report defaults).
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ SKIP_DIRS = {
 SUPPORTED_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 
 MAX_FILE_BYTES = 512 * 1024
+DEFAULT_MAX_FILES = 5000
 
 
-def walk_source_files(root: Path) -> tuple[list[Path], list[str]]:
+def walk_source_files(root: Path, max_files: int | None = None) -> tuple[list[Path], list[str]]:
     """Return (files, skipped_notes). Never raises on unreadable trees."""
     files: list[Path] = []
     skipped: list[str] = []
@@ -31,9 +33,16 @@ def walk_source_files(root: Path) -> tuple[list[Path], list[str]]:
         return [], [f"root not readable: {root}"]
     if not root.exists():
         return [], [f"root does not exist: {root}"]
+    capped = False
     for dirpath, dirnames, filenames in os.walk(root):
+        if max_files is not None and len(files) >= max_files:
+            capped = True
+            break
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for name in filenames:
+            if max_files is not None and len(files) >= max_files:
+                capped = True
+                break
             path = Path(dirpath) / name
             rel = str(path.relative_to(root))
             ext = path.suffix.lower()
@@ -48,7 +57,9 @@ def walk_source_files(root: Path) -> tuple[list[Path], list[str]]:
                 skipped.append(f"{rel}: too large ({size} bytes)")
                 continue
             files.append(path)
-    return files, skipped
+    if capped:
+        skipped.append(f"scan capped at {max_files} files; results are partial")
+    return files, skipped[:50]
 
 
 def relpath(path: Path, root: Path) -> str:
@@ -78,25 +89,26 @@ def plugin_data_dir() -> Path:
     return Path(home) / "plugin-data" / "meridian"
 
 
-def scan_cache_path() -> Path:
-    return plugin_data_dir() / "scan-cache.json"
-
-
 def ledger_path() -> Path:
     return plugin_data_dir() / "ledger.jsonl"
 
 
 def find_spec(root: Path) -> Path | None:
-    """Look for .meridian.yaml upwards from root (repo sentinel), bounded."""
+    """Look for .meridian.yaml upwards from root (repo sentinel), bounded.
+
+    The walk stops at any git boundary — including the start directory
+    itself: a spec belongs to its repo, not to whatever sits above it.
+    The starting root is checked first, so a repo whose spec is nested one
+    level up is still found.
+    """
     current = root.resolve()
     for _ in range(8):
         candidate = current / ".meridian.yaml"
         if candidate.is_file():
             return candidate
+        if (current / ".git").exists():
+            return None
         if current.parent == current:
             break
-        # stop at git boundary even if not a meridian home
-        if (current / ".git").exists() and current != root.resolve():
-            return None
         current = current.parent
     return None

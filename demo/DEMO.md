@@ -14,10 +14,10 @@ beyond the lines marked.
 
 | t | Screen action | Voice-over (short!) |
 |---|---|---|
-| 0:00 | `ls` — one ordinary `orders.py` and a `.meridian.yaml` | "Three files. One checkout pipeline. Zero state machine docs." |
+| 0:00 | `ls` — one ordinary `orders.py` and a `.meridian.yaml` | "Two files. One checkout pipeline. Zero state machine docs." |
 | 0:05 | Launch `hermes` in the repo | "Hermes, find the state machines in this app." |
-| 0:10 | Agent calls `meridian_scan` → table of 2 machines, 11 states | "Meridian maps every status field. No model assertions — AST." |
-| 0:20 | Agent calls `meridian_verify` → 2 violations + unreachable/dead | "Two findings: an unreachable state… and a refund path that money never touched." |
+| 0:10 | Agent calls `meridian_scan` → 4 machines; `Order.status`: 11 states, 2 unreachable | "Meridian maps every status field. No model assertions — AST. The unreachable one should never exist." |
+| 0:20 | Agent calls `meridian_verify` → deny on `draft → refunded` + dead branch | "Two findings: an unreachable state… and a refund path that money never touched." |
 | 0:30 | Switch to file view: `refund()` contains `OrderStatus.DRAFT` in the tuple | "Line 78. The guard list had DRAFT in it. That's the bug — nobody can see it by reading code." |
 | 0:40 | Agent calls `meridian_spec check` → FAILS with `orders.py:78 draft → refunded [deny]` | "The spec — which the human reviewed — makes it a hard stop." |
 | 0:50 | Apply the fix (remove `OrderStatus.DRAFT` from the tuple), save | "One token deleted." |
@@ -31,4 +31,4 @@ beyond the lines marked.
 
 **Demo insurance (if something fails live):**
 - `python3 orders.py` runs the happy path with no Meridian at all — proves nothing else broke.
-- `python3 -m unittest discover -s tests -v` — 15 green checks.
+- `python3 -m unittest discover -s tests -v` — 28 checks, all green.

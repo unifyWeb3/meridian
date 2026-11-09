@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -18,7 +19,6 @@ from .analyzer import graph
 
 logger = logging.getLogger(__name__)
 
-_WRITE_HINTS = ("write", "edit", "patch")
 _SUPPORTED_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 _MAX_RESCAN_FILES = 400
 _NOTE_TTL_SECONDS = 1200
@@ -35,13 +35,18 @@ def _changed_files(args: dict) -> list[Path]:
     if not isinstance(args, dict):
         return found
     candidates: list[str] = []
-    for value in args.values():
+
+    def collect(value) -> None:
         if isinstance(value, str):
             candidates.append(value)
+        elif isinstance(value, list):
+            for item in value[:50]:
+                collect(item)
         elif isinstance(value, dict):
             for inner in value.values():
-                if isinstance(inner, str):
-                    candidates.append(inner)
+                collect(inner)
+
+    collect(args)
     try:
         base = _session_cwd()
     except Exception:
@@ -87,18 +92,20 @@ def _store_note(key: str, text: str) -> None:
     bucket = _PENDING_NOTES.setdefault(key, [])
     bucket.append((time.time(), text))
     del bucket[:-3]
-    # global sweep of stale notes
     now = time.time()
-    for k in list(_PENDING_NOTES):
-        _PENDING_NOTES[k] = [(ts, t) for ts, t in _PENDING_NOTES[k] if now - ts < _NOTE_TTL_SECONDS]
-        if not _PENDING_NOTES[k]:
-            del _PENDING_NOTES[k]
+    stale = [k for k, v in _PENDING_NOTES.items()
+             if all(now - ts >= _NOTE_TTL_SECONDS for ts, _ in v)]
+    for k in stale:
+        del _PENDING_NOTES[k]
 
 
 def _take_notes(key: str) -> list[str]:
+    # Only this session's bucket (or the shared "local" bucket when no
+    # session is known) is ever injected — notes never leak across sessions.
     notes = [t for _, t in _PENDING_NOTES.pop(key, [])]
-    local = [t for _, t in _PENDING_NOTES.pop("local", [])]
-    return notes + local
+    if key != "local":
+        notes += [t for _, t in _PENDING_NOTES.pop("local", [])]
+    return notes
 
 
 def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
@@ -108,7 +115,8 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
         if not _AUTO_VERIFY:
             return None
         lowered = (tool_name or "").lower()
-        if not any(hint in lowered for hint in _WRITE_HINTS):
+        tokens = set(re.findall(r"[a-z0-9]+", lowered))
+        if not (tokens & {"write", "patch", "editor", "edit_file", "create_file", "str_replace", "append"}):
             return None
         changed = _changed_files(args or {})
         if not changed:
@@ -120,13 +128,14 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
                 continue
             root = spec_path.parent.resolve()
             try:
-                result_scan = scan_root(root)
-            except Exception:
-                continue
-            if result_scan.files_scanned > _MAX_RESCAN_FILES:
-                note = (f"meridian: {root.name} has {result_scan.files_scanned} source files; "
+                probe, _ = repo_mod.walk_source_files(root)
+                if len(probe) > _MAX_RESCAN_FILES:
+                    notes_for_key.append(
+                        f"meridian: {root.name} has {len(probe)} source files; "
                         f"auto-verify skipped — run meridian_verify manually")
-                notes_for_key.append(note)
+                    continue
+                result_scan = scan_root(root, max_files=_MAX_RESCAN_FILES)
+            except Exception:
                 continue
             machine_files = {(root / s).resolve() for machine in result_scan.machines for s in machine.sources}
             if changed_file not in machine_files:
@@ -195,6 +204,14 @@ def _handle_meridian(raw_args: str) -> str:
                 "  verify — edge verdicts (unreachable/dead/unguarded)\n"
                 "  check  — enforce .meridian.yaml (CI primitive)\n"
                 "  ledger — ledger integrity summary")
+    if sub == "ledger":
+        try:
+            status = ledger.verify()
+            return (f"meridian ledger: {'valid' if status['ok'] else 'BROKEN'} — "
+                    f"{status['entries']} entries"
+                    + ("" if status["ok"] else f" — {status['problems'][:2]}"))
+        except Exception as exc:
+            return f"meridian ledger: {exc}"
     try:
         result = scan_root(root)
     except Exception as exc:
@@ -210,28 +227,38 @@ def _handle_meridian(raw_args: str) -> str:
         lines.append(f"  spec: {spec if spec else 'none — `hermes meridian spec draft` to start'}")
         return "\n".join(lines)
     if sub in ("verify", "check"):
-        payload = tools._verify_all(root, machine_id=None, strict=_STRICT)
+        try:
+            payload = tools._verify_all(root, machine_id=None, strict=_STRICT)
+        except Exception as exc:
+            return f"meridian: {exc}"
         if payload.get("error"):
             return f"meridian: {payload['error']}"
+        cov = payload.get("coverage", {})
+        lines = []
+        if cov.get("uncovered_machines"):
+            lines.append(f"uncovered (no spec entry): {', '.join(cov['uncovered_machines'])}")
         if payload["violation_count"]:
-            lines = [f"meridian: {payload['violation_count']} violation(s):"]
+            lines.append(f"meridian: {payload['violation_count']} violation(s):")
             for v in payload["violations"][:10]:
                 lines.append(f"  - {v['anchor']} {v['src']} -> {v['dst']} ({v['via']})")
-            return "\n".join(lines)
-        return f"meridian: OK — {len(payload['verdicts'])} machine(s) verified, 0 violations"
-    if sub == "ledger":
-        try:
-            status = ledger.verify()
-            return (f"meridian ledger: {'valid' if status['ok'] else 'BROKEN'} — "
-                    f"{status['entries']} entries"
-                    + ("" if status["ok"] else f" — {status['problems'][:2]}"))
-        except Exception as exc:
-            return f"meridian ledger: {exc}"
+        elif lines:
+            lines.append("meridian: 0 violations, but machines are uncovered")
+        else:
+            lines.append(f"meridian: OK — {len(payload['verdicts'])} machine(s) verified, 0 violations")
+        return "\n".join(lines)
     return f"meridian: unknown subcommand '{sub}' — try /meridian help"
 
 
 # ----------------------------------------------------------- cli
 def _cli_main(args):
+    try:
+        return _cli_dispatch(args)
+    except Exception as exc:  # never a traceback in a CI log
+        print(f"meridian: {exc}")
+        return 2
+
+
+def _cli_dispatch(args):
     cmd = getattr(args, "meridian_command", None) or "help"
     root = Path(getattr(args, "root", ".") or ".").expanduser().resolve()
     if cmd == "scan":
@@ -249,8 +276,10 @@ def _cli_main(args):
         print(json.dumps(payload, indent=2))
         return
     if cmd == "check":
+        allow_uncovered = bool(getattr(args, "allow_uncovered", False))
         payload = tools._verify_all(root, machine_id=None,
-                                    strict=getattr(args, "strict", False) or _STRICT)
+                                    strict=getattr(args, "strict", False) or _STRICT,
+                                    allow_uncovered=allow_uncovered)
         if payload.get("error"):
             print(f"meridian check: {payload['error']}")
             return 2
@@ -258,6 +287,16 @@ def _cli_main(args):
             # A CI gate that passes because the spec is missing is a false green.
             print(f"meridian check: no .meridian.yaml at or above {root} — nothing to enforce (exit 2)")
             return 2
+        cov = payload.get("coverage", {})
+        if cov.get("spec_covers_nothing"):
+            print("meridian check: the spec covers none of this repo's machines — refusing a false green (exit 2)")
+            return 2
+        if cov.get("uncovered_machines") and not allow_uncovered:
+            print(f"meridian check FAILED — {len(cov['uncovered_machines'])} machine(s) not covered by the spec:")
+            for mid in cov["uncovered_machines"]:
+                print(f"  COVERAGE  {mid}")
+            print("(run `hermes meridian spec accept --force`, or pass --allow-uncovered to waive)")
+            return 1
         if payload["violation_count"]:
             print(f"meridian check FAILED — {payload['violation_count']} violation(s):")
             for v in payload["violations"]:
@@ -282,12 +321,16 @@ def _cli_main(args):
             target = Path(out).expanduser()
             if not target.is_absolute():
                 target = root / out
+            target = target.resolve()
+            if target != root and root not in target.parents:
+                print(f"meridian report: refusing to write outside {root}: {target}")
+                return 2
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report, encoding="utf-8")
             print(f"wrote {target}")
         else:
             print(report)
-        return
+        return 0
     if cmd == "diagram":
         machine_id = args.machine_id
         result = scan_root(root)
@@ -330,26 +373,39 @@ def _cli_main(args):
     if cmd == "ledger":
         action = args.ledger_action
         if action == "show":
-            for entry in ledger.read_entries()[-getattr(args, "limit", 10):]:
+            limit = max(1, min(int(getattr(args, "limit", 10)), 100))
+            entries = ledger.read_entries()
+            for entry in entries[-limit:]:
                 if entry.get("_corrupt"):
                     print("  [corrupt entry]")
                 else:
                     print(f"  #{entry.get('seq')} {entry.get('ts')} {entry.get('event')}")
-            return
+            return 0
         if action == "verify":
             status = ledger.verify()
             if status["ok"]:
                 print(f"meridian ledger OK — {status['entries']} entries, head {status['head']}")
-            else:
-                print(f"meridian ledger BROKEN — {status['entries']} entries:")
-                for problem in status["problems"]:
-                    print(f"  - {problem}")
-                return 1
-            return
+                return 0
+            print(f"meridian ledger BROKEN — {status['entries']} entries:")
+            for problem in status["problems"]:
+                print(f"  - {problem}")
+            return 1
         if action == "stats":
             print(json.dumps(ledger.stats(), indent=2))
-            return
-    print("usage: hermes meridian {scan|verify|check|report|diagram|spec|ledger} --help")
+            return 0
+        if action == "repair":
+            result = ledger.repair()
+            if result.get("dropped_lines"):
+                print(f"meridian ledger REPAIRED — kept {result['kept']} entries, "
+                      f"dropped {result['dropped_lines']} line(s); backup at {result['backup']}")
+            else:
+                print(f"meridian ledger: nothing to repair ({result.get('kept', 'n/a')} entries intact)")
+            return 0
+    if cmd == "help":
+        print("usage: hermes meridian {scan|verify|check|report|diagram|spec|ledger} --help")
+        return 0
+    print(f"meridian: unknown subcommand '{cmd}'")
+    return 2
 
 
 def _setup_cli(subparser) -> None:
@@ -370,6 +426,8 @@ def _setup_cli(subparser) -> None:
     p = subs.add_parser("check", help="enforce .meridian.yaml; exit 1 on violations (CI)")
     add_root(p)
     p.add_argument("--strict", action="store_true")
+    p.add_argument("--allow-uncovered", action="store_true",
+                   help="waive machines not covered by the spec (default: fail)")
 
     p = subs.add_parser("report", help="markdown report to stdout or --out")
     add_root(p)
@@ -390,12 +448,13 @@ def _setup_cli(subparser) -> None:
         if name == "accept":
             sp.add_argument("--force", action="store_true")
 
-    p = subs.add_parser("ledger", help="evidence ledger: show / verify / stats")
+    p = subs.add_parser("ledger", help="evidence ledger: show / verify / stats / repair")
     ledger_subs = p.add_subparsers(dest="ledger_action")
     lp = ledger_subs.add_parser("show", help="recent entries")
     lp.add_argument("--limit", type=int, default=10)
     ledger_subs.add_parser("verify", help="recompute the hash chain")
     ledger_subs.add_parser("stats", help="event counts")
+    ledger_subs.add_parser("repair", help="drop a torn/corrupt tail; keep the valid prefix (a backup is kept)")
 
     subparser.set_defaults(func=_cli_main)
 

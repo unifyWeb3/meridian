@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +95,8 @@ def meridian_scan(args: dict, **kwargs: Any) -> str:
 
 
 # -------------------------------------------------------------- verify
-def _verify_all(root: Path, *, machine_id: str | None, strict: bool) -> dict:
+def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
+                allow_uncovered: bool = False) -> dict:
     result = scan_root(root)
     spec_path = repo_mod.find_spec(root)
     spec = load_spec(spec_path) if spec_path else None
@@ -104,6 +106,21 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool) -> dict:
         if not machines:
             return {"error": f"machine not found: {machine_id}",
                     "known": [m.id for m in result.machines][:30]}
+
+    def _enum_only(m) -> bool:
+        return not m.transitions and not m.initial and m.id.startswith("enum:")
+
+    if spec:
+        found_ids = {m.id for m in result.machines}
+        spec_ids = spec.ids()
+        covered = sorted(found_ids & spec_ids)
+        uncovered = sorted(m.id for m in result.machines
+                           if m.id not in spec_ids and not _enum_only(m))
+        spec_covers_nothing = not any(not _enum_only(m) and m.id in spec_ids
+                                      for m in result.machines)
+    else:
+        covered, uncovered, spec_covers_nothing = [], [], False
+
     verdicts = []
     all_violations = []
     for machine in machines:
@@ -118,23 +135,30 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool) -> dict:
         if extra:
             verdict_dict["transitions_truncated"] = extra
         verdicts.append(verdict_dict)
-        all_violations.extend(verdict.to_dict()["violations"])
-    unspecced = []
-    unfound = []
-    if spec:
-        found_ids = {m.id for m in result.machines}
-        unspecced = sorted(found_ids - spec.ids())
-        unfound = sorted(spec.ids() - found_ids)
+        all_violations.extend(verdict_dict["violations"])
+    unfound = sorted(spec.ids() - {m.id for m in result.machines}) if spec else []
+    violations_total = len(all_violations)
+    shown_violations = all_violations[:50]
+    # An `--allow-uncovered` waive covers uncovered machines, never a spec
+    # that enforces nothing.
+    uncovered_enforced = [] if allow_uncovered else uncovered
     return {
         "root": result.root,
         "spec": str(spec_path) if spec_path else None,
         "spec_version": spec.version if spec else None,
         "strict": strict,
-        "ok": not all_violations,
-        "violation_count": len(all_violations),
-        "violations": all_violations,
-        "unspecced_machines": unspecced,
-        "spec_machines_not_found": unfound,
+        "allow_uncovered": allow_uncovered,
+        "coverage": {
+            "spec_present": spec is not None,
+            "covered_machines": covered,
+            "uncovered_machines": uncovered,
+            "spec_covers_nothing": spec_covers_nothing,
+            "spec_machines_not_found": unfound,
+        },
+        "ok": not all_violations and not uncovered_enforced and not spec_covers_nothing,
+        "violation_count": violations_total,
+        "violations_truncated": max(0, violations_total - len(shown_violations)),
+        "violations": shown_violations,
         "verdicts": verdicts,
         "files_scanned": result.files_scanned,
         "elapsed_ms": result.elapsed_ms,
@@ -169,17 +193,34 @@ def _xstate_id(raw: str) -> str:
     return cleaned.strip("_") or "machine"
 
 
+_MERMAID_KEYWORDS = {"note", "loop", "end", "state", "direction", "as", "class", "click"}
+
+
+def _mermaid_name(state: str, used: dict[str, str]) -> str:
+    if state not in used:
+        safe = state if state.replace("_", "").replace("-", "").replace(".", "").isalnum() and state.lower() not in _MERMAID_KEYWORDS else "s_" + re.sub(r"\W", "_", state)
+        if safe in used.values():
+            safe = f"{safe}_{len(used)}"
+        used[state] = safe
+    return used[state]
+
+
 def _mermaid(machine) -> str:
+    used: dict[str, str] = {}
+
+    def sid(state: str) -> str:
+        return _mermaid_name(state, used)
+
     lines = ["stateDiagram-v2"]
     for initial in machine.initial:
-        lines.append(f"    [*] --> {initial}")
+        lines.append(f"    [*] --> {sid(initial)}")
     for t in machine.transitions:
         if t.src:
             label = (t.via or "write").replace('"', "'")
-            lines.append(f"    {t.src} --> {t.dst} : {label}")
+            lines.append(f"    {sid(t.src)} --> {sid(t.dst)} : {label}")
     for state in machine.states:
         if state not in {t.dst for t in machine.transitions} and state not in machine.initial:
-            lines.append(f"    note right of {state}: never assigned (dead)")
+            lines.append(f"    note right of {sid(state)}: never assigned (dead)")
     return "\n".join(lines)
 
 
@@ -275,7 +316,8 @@ def meridian_spec(args: dict, **kwargs: Any) -> str:
         if not spec_path:
             return _err(f"no .meridian.yaml at or above {root}", hint="run action=draft first")
         strict = bool(args.get("strict", False))
-        payload = _verify_all(root, machine_id=None, strict=strict)
+        allow_uncovered = bool(args.get("allow_uncovered", False))
+        payload = _verify_all(root, machine_id=None, strict=strict, allow_uncovered=allow_uncovered)
         _ledger_event("check", {"root": payload["root"], "spec": payload["spec"],
                                 "violation_count": payload["violation_count"], "ok": payload["ok"]})
         return _ok({"check": payload})
@@ -292,13 +334,15 @@ def meridian_ledger(args: dict, **kwargs: Any) -> str:
         action = args.get("action")
         if action == "show":
             limit = max(1, min(int(args.get("limit", 10)), 100))
-            entries = ledger.read_entries()[-limit:]
-            return _ok({"entries": entries, "total": len(ledger.read_entries())})
+            entries = ledger.read_entries()
+            return _ok({"entries": entries[-limit:], "total": len(entries)})
         if action == "verify":
             return _ok(ledger.verify())
         if action == "stats":
             return _ok(ledger.stats())
-        return _err("action must be one of: show, verify, stats")
+        if action == "repair":
+            return _ok(ledger.repair())
+        return _err("action must be one of: show, verify, stats, repair")
     except Exception as exc:
         return _err(f"ledger failed: {exc}")
 
@@ -327,6 +371,10 @@ def _report_markdown(root: Path, payload: dict) -> str:
             f"| {', '.join(verdict.get('dead', [])) or '—'} "
             f"| {len(verdict.get('violations', []))} |"
         )
+    # One diagram up front: the first machine that has real evidence.
+    diagram_machine = next(
+        (m for m in scan_root(root).machines if m.transitions), None)
+
     for verdict in payload.get("verdicts", []):
         lines += ["", f"## `{verdict['machine_id']}`", ""]
         lines.append(f"- States: {', '.join(verdict.get('states', [])) or '—'}")
@@ -350,6 +398,15 @@ def _report_markdown(root: Path, payload: dict) -> str:
         for note in verdict.get("notes", []):
             lines.append(f"- note: {note}")
     head = ledger.verify()
+    lines += [
+        "",
+        "## Diagrams",
+        "",
+    ]
+    if diagram_machine:
+        lines += ["```mermaid", _mermaid(diagram_machine), "```"]
+    else:
+        lines.append("_No machine had anchored transitions to diagram._")
     lines += [
         "",
         "## Evidence ledger",
@@ -377,6 +434,11 @@ def meridian_report(args: dict, **kwargs: Any) -> str:
             target = Path(out).expanduser()
             if not target.is_absolute():
                 target = root / out
+            target = target.resolve()
+            # The caller named this path, but it must stay inside the scanned
+            # repo — Meridian never writes outside it on an agent's behalf.
+            if root != target and root not in target.parents:
+                return _err(f"out_file must resolve inside {root} — refusing to write {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report, encoding="utf-8")
             written = str(target)

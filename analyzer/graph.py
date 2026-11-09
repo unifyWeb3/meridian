@@ -52,6 +52,7 @@ class MachineVerdict:
     violations: list[Violation] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    unreachable_reported: bool = True
 
     @property
     def ok(self) -> bool:
@@ -63,6 +64,7 @@ class MachineVerdict:
             "ok": self.ok,
             "reachable": self.reachable,
             "unreachable": self.unreachable,
+            "unreachable_reported": self.unreachable_reported,
             "dead": self.dead,
             "terminal": self.terminal,
             "guarded_writes": self.guarded_writes,
@@ -92,19 +94,28 @@ def analyze_machine(
     adjacency = _adjacency(machine)
 
     # --- reachability -----------------------------------------------------
+    # Entry (src=None) writes are optimistic one-time seeds: a write that
+    # can fire from any state may produce any of its targets. We do NOT
+    # union general states in as seeds, because pretending every state is
+    # an initial hides unreachable bugs — but when no initial was
+    # discovered at all, reachability is unknown and we say so instead of
+    # reporting an empty "unreachable".
+    entry_seeds = adjacency.get(None, [])
+    initial_known = bool(initial)
     seeds = initial if initial else states
     reachable: set[str] = set()
-    frontier = list(seeds)
+    frontier = list(seeds) + entry_seeds
     while frontier:
         cur = frontier.pop()
         if cur in reachable:
             continue
         reachable.add(cur)
-        for dst in adjacency.get(cur, []) + adjacency.get(None, []):
+        for dst in adjacency.get(cur, []):
             if dst in states:
                 frontier.append(dst)
 
-    unreachable = sorted(set(states) - reachable)
+    unreachable_reported = initial_known
+    unreachable = sorted(set(states) - reachable) if initial_known else []
 
     # --- dead states: never constructed, never written ---------------------
     incoming: set[str] = {t.dst for t in machine.transitions}
@@ -117,9 +128,16 @@ def analyze_machine(
     outgoing = {t.src for t in machine.transitions if t.src is not None}
     terminal = sorted(set(reachable) - outgoing)
 
-    # --- unguarded writes ---------------------------------------------------
-    unguarded = [t for t in machine.transitions if t.guarded is False]
-    guarded = len(machine.transitions) - len(unguarded)
+    notes: list[str] = []
+    if not initial_known:
+        notes.append("no initial state discovered; unreachable-states not reported")
+    if entry_seeds:
+        notes.append(f"{len(entry_seeds)} unguarded write(s) treated as potentially reachable")
+
+    # --- unguarded writes (constructor writes are expected, not findings) ---
+    unguarded_all = [t for t in machine.transitions if t.guarded is False]
+    unguarded = [t for t in unguarded_all if t.kind != "constructor"]
+    guarded = len(machine.transitions) - len(unguarded_all)
     unguarded_out = [
         {"anchor": t.anchor(), "dst": t.dst, "via": t.via} for t in unguarded[:25]
     ]
@@ -127,7 +145,6 @@ def analyze_machine(
     # --- spec enforcement ---------------------------------------------------
     violations: list[Violation] = []
     warnings: list[str] = []
-    notes: list[str] = []
     if not machine.transitions and not machine.initial:
         notes.append("enum-only machine: transitions were never anchored; "
                      "dead-state reporting disabled")
@@ -143,6 +160,15 @@ def analyze_machine(
         allow = spec.allow
         for t in machine.transitions:
             if t.src is None:
+                if t.kind == "constructor":
+                    # Constructors are verifiable: the spec's initial states are
+                    # the contract. In strict mode a constructor that builds a
+                    # non-initial state is a real violation.
+                    if strict and spec.initial and t.dst not in spec.initial:
+                        violations.append(Violation(
+                            machine.id, "init", t.dst, t.file, t.line, t.via, "initial",
+                            f"constructor initializes '{t.dst}', not in spec initial ({', '.join(spec.initial)})"))
+                    continue
                 if strict:
                     violations.append(Violation(
                         machine.id, "*", t.dst, t.file, t.line, t.via, "unverifiable",
@@ -175,4 +201,5 @@ def analyze_machine(
         violations=violations,
         warnings=warnings,
         notes=notes,
+        unreachable_reported=unreachable_reported,
     )

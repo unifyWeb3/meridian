@@ -216,7 +216,7 @@ machines:
         self.assertEqual(run("check", "--root", str(DEMO)), 1)
         self.assertEqual(run("check", "--root", str(self.tmp)), 2)  # no spec → error, never a false green
         self.assertEqual(run("scan", "--root", str(DEMO)), None)  # returns None → rc 0
-        self.assertEqual(run("ledger", "verify"), None)
+        self.assertEqual(run("ledger", "verify"), 0)
 
     def test_json_in_yaml_loader(self):
         payload = {"version": 1,
@@ -271,6 +271,197 @@ class LedgerTests(TempRepoTest):
         self.assertTrue(status["problems"])
         with self.assertRaises(ledger.LedgerError):
             ledger.append("scan", {"root": "/tmp/y"})
+
+
+class ReviewFixTests(TempRepoTest):
+    """Regressions for review findings — each of these was a real defect."""
+
+    def test_not_branch_is_not_a_constraint(self):
+        self.write("n.py", """
+        class T:
+            def __init__(self):
+                self.status = "draft"
+            def ship_even_if_not_draft(self):
+                if not (self.status == "draft"):
+                    self.status = "shipped"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "T.status")
+        edges = {(t.src, t.dst) for t in machine.transitions}
+        self.assertNotIn(("draft", "shipped"), edges)
+        self.assertIn((None, "shipped"), {(t.src, t.dst) for t in machine.transitions})
+        note = [n for n in machine.notes if "unguarded" in n]
+        self.assertTrue(note)
+
+    def test_all_caps_enum_values_are_states(self):
+        self.write("c.py", """
+        from enum import Enum
+        class Status(str, Enum):
+            PENDING = "PENDING"
+            DONE = "DONE"
+        class T:
+            def __init__(self):
+                self.status = Status.PENDING
+            def finish(self):
+                if self.status == Status.PENDING:
+                    self.status = Status.DONE
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "T.status")
+        self.assertEqual(machine.states, ["DONE", "PENDING"])
+
+    def test_non_enum_attribute_is_not_fabricated(self):
+        self.write("a.py", """
+        class T:
+            def __init__(self):
+                self.status = "draft"
+            def reset(self):
+                self.status = cfg.DEFAULT_MODE
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "T.status")
+        self.assertNotIn("default_mode", machine.states)
+        self.assertEqual({t.dst for t in machine.transitions}, {"draft"})
+        self.assertTrue(any("unresolved value" in w for w in result.warnings))
+
+    def test_nested_scope_writers_are_reported_not_analyzed(self):
+        self.write("s.py", """
+        class T:
+            def __init__(self):
+                self.status = "idle"
+            def outer(self):
+                def inner():
+                    self.status = "busy"
+                inner()
+        """)
+        result = scan_root(self.tmp)
+        self.assertTrue(any("nested scope" in w and "status" in w for w in result.warnings))
+        machine = next(m for m in result.machines if m.id == "T.status")
+        self.assertNotIn("busy", machine.states)
+
+    def test_spec_covers_nothing_refuses_green(self):
+        from meridian import _setup_cli, _cli_dispatch
+        import argparse
+        self.write("o.py", """
+        class O:
+            def __init__(self):
+                self.status = "draft"
+        """)
+        (self.tmp / ".meridian.yaml").write_text(
+            'version: 1\nmachines:\n  - id: "Other.machine"\n    states: ["a"]\n', encoding="utf-8")
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(["check", "--root", str(self.tmp)])
+        self.assertEqual(_cli_dispatch(args), 2)
+
+    def test_uncovered_machine_fails_check(self):
+        from meridian import _setup_cli, _cli_dispatch
+        import argparse
+        self.write("o.py", """
+        class O:
+            def __init__(self):
+                self.status = "draft"
+                self.payment_status = "pending"
+            def go(self):
+                if self.status == "draft":
+                    self.status = "done"
+        """)
+        (self.tmp / ".meridian.yaml").write_text(
+            'version: 1\nmachines:\n  - id: "O.status"\n    states: ["draft", "done"]\n    initial: ["draft"]\n',
+            encoding="utf-8")
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(["check", "--root", str(self.tmp)])
+        self.assertEqual(_cli_dispatch(args), 1)  # O.payment_status uncovered
+        args = parser.parse_args(["check", "--root", str(self.tmp), "--allow-uncovered"])
+        self.assertEqual(_cli_dispatch(args), 0)
+
+    def test_constructor_initial_rule_in_strict_mode(self):
+        self.write("i.py", """
+        class O:
+            def __init__(self):
+                self.status = "shipped"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "O.status")
+        spec = spec_mod.SpecMachine(id="O.status", states=["shipped", "draft"],
+                                    initial=["draft"], allow=set(), deny=set())
+        verdict = graph.analyze_machine(machine, spec, strict=True)
+        rules = {v.rule for v in verdict.violations}
+        self.assertIn("initial", rules)
+        spec2 = spec_mod.SpecMachine(id="O.status", states=["shipped", "draft"],
+                                     initial=["shipped"], allow=set(), deny=set())
+        verdict2 = graph.analyze_machine(machine, spec2, strict=True)
+        self.assertNotIn("initial", {v.rule for v in verdict2.violations})
+
+    def test_ledger_repair_after_torn_write(self):
+        ledger.append("scan", {"root": "/tmp/x"})
+        ledger.append("verify", {"ok": True})
+        path = ledger.ledger_path()
+        raw = path.read_text(encoding="utf-8")
+        path.write_text(raw + '{"seq": 3, "ts": "now", "event": "scan", "prev"', encoding="utf-8")
+        status = ledger.verify()
+        self.assertFalse(status["ok"])
+        with self.assertRaises(ledger.LedgerError):
+            ledger.append("check", {"ok": True})
+        result = ledger.repair()
+        self.assertTrue(result["ok"])
+        self.assertGreater(result["dropped_lines"], 0)
+        status = ledger.verify()
+        self.assertTrue(status["ok"])
+        again = ledger.append("check", {"ok": True})
+        self.assertTrue(again["hash"])
+
+    def test_draft_spec_quotes_yaml_scalars(self):
+        self.write("y.py", """
+        class T:
+            def __init__(self):
+                self.status = "on"
+            def go(self):
+                if self.status == "on":
+                    self.status = "off"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "T.status")
+        machine.states = ["on", "off"]
+        text = draft_spec([machine])
+        spec = spec_mod._coerce_spec(_mini_yaml(text), Path("x.yaml"))
+        self.assertEqual(spec.machines[0].states, ["on", "off"])
+
+    def test_unreachable_not_reported_without_initial(self):
+        self.write("u.py", """
+        class T:
+            def mystery(self):
+                self.status = "lonely"
+        """)
+        # force no discovery of initial: craft machine manually
+        from meridian.analyzer.model import Machine, Transition
+        m = Machine(id="T.status", field="status", owner="T", language="python",
+                    confidence="low", states=["lonely", "elsewhere"], initial=[],
+                    transitions=[Transition(None, "lonely", "mystery", "u.py", 3, True, "write")],
+                    sources=["u.py"], notes=[])
+        verdict = graph.analyze_machine(m)
+        self.assertFalse(verdict.unreachable_reported)
+        self.assertEqual(verdict.unreachable, [])
+        self.assertTrue(any("no initial state" in n for n in verdict.notes))
+
+    def test_on_off_draft_roundtrip_matches_pyyaml_semantics(self):
+        # "on"/"off" MUST stay strings through draft -> mini-yaml/json paths
+        self.write("r.py", """
+        class T:
+            def __init__(self):
+                self.status = "on"
+            def go(self):
+                if self.status == "on":
+                    self.status = "off"
+        """)
+        result = scan_root(self.tmp)
+        machine = next(m for m in result.machines if m.id == "T.status")
+        text = draft_spec([machine])
+        path = self.tmp / ".meridian.yaml"
+        path.write_text(text, encoding="utf-8")
+        spec = load_spec(path)
+        self.assertIn("on", spec.machines[0].states)
 
 
 class DiagramTests(TempRepoTest):

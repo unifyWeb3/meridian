@@ -154,31 +154,78 @@ def _mini_yaml(text: str) -> dict[str, Any]:
 
 
 def _coerce_spec(data: Any, path: Path) -> Spec:
+    """Validate the spec strictly. Anything malformed raises SpecError —
+    silently dropping bad edges would make enforcement a no-op with a
+    green exit code, which is the one failure mode this plugin must never
+    have."""
     if not isinstance(data, dict):
         raise SpecError("spec must be a mapping with 'version' and 'machines'")
-    version = data.get("version", 1)
-    if not isinstance(version, int):
-        version = int(version)
+    try:
+        version = data.get("version", 1)
+        version = version if isinstance(version, int) and not isinstance(version, bool) else int(version)
+    except (TypeError, ValueError) as exc:
+        raise SpecError(f"version must be an integer: {exc}") from exc
+
+    machines_raw = data.get("machines", [])
+    if machines_raw is None:
+        machines_raw = []
+    if not isinstance(machines_raw, list):
+        raise SpecError("'machines' must be a list")
+
+    errors: list[str] = []
     machines: list[SpecMachine] = []
-    for i, raw in enumerate(data.get("machines", []) or []):
+
+    def _str_list(value: Any, field_name: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            errors.append(f"{field_name} must be a list")
+            return []
+        out = []
+        for i, item in enumerate(value):
+            if isinstance(item, bool) or not isinstance(item, (str, int)):
+                errors.append(f"{field_name}[{i}] must be a string, got {item!r}")
+            else:
+                out.append(str(item))
+        return out
+
+    def _edges(value: Any, field_name: str, machine_id: str) -> set[tuple[str, str]]:
+        if value is None:
+            return set()
+        if not isinstance(value, list):
+            errors.append(f"{machine_id}: {field_name} must be a list of [src, dst] pairs")
+            return set()
+        edges: set[tuple[str, str]] = set()
+        for i, item in enumerate(value):
+            if not (isinstance(item, (list, tuple)) and len(item) == 2
+                    and all(isinstance(p, str) for p in item)):
+                errors.append(f"{machine_id}: {field_name}[{i}] must be a [src, dst] pair of strings, got {item!r}")
+                continue
+            edges.add((item[0], item[1]))
+        return edges
+
+    for i, raw in enumerate(machines_raw):
         if not isinstance(raw, dict):
-            raise SpecError(f"machines[{i}] must be a mapping")
-        states = [str(s) for s in (raw.get("states") or [])]
-        initial = [str(s) for s in (raw.get("initial") or [])]
-        def _edges(value: Any) -> set[tuple[str, str]]:
-            edges: set[tuple[str, str]] = set()
-            for item in value or []:
-                if isinstance(item, (list, tuple)) and len(item) == 2:
-                    edges.add((str(item[0]), str(item[1])))
-            return edges
-        machines.append(SpecMachine(
-            id=str(raw.get("id", f"machines[{i}]")),
-            states=states,
-            initial=initial,
-            allow=_edges(raw.get("allow")),
-            deny=_edges(raw.get("deny")),
-            notes=[str(n) for n in (raw.get("notes") or [])],
-        ))
+            errors.append(f"machines[{i}] must be a mapping, got {raw!r}")
+            continue
+        machine_id = raw.get("id")
+        if not isinstance(machine_id, str) or not machine_id.strip():
+            errors.append(f"machines[{i}]: id must be a non-empty string")
+            machine_id = f"machines[{i}]"
+        states = _str_list(raw.get("states"), f"{machine_id}.states")
+        initial = _str_list(raw.get("initial"), f"{machine_id}.initial")
+        allow = _edges(raw.get("allow"), "allow", machine_id)
+        deny = _edges(raw.get("deny"), "deny", machine_id)
+        notes = _str_list(raw.get("notes"), f"{machine_id}.notes")
+        known = {"id", "states", "initial", "allow", "deny", "notes"}
+        for key in raw:
+            if key not in known:
+                notes.append(f"ignored unknown key: {key}")
+        machines.append(SpecMachine(id=machine_id.strip(), states=states,
+                                    initial=initial, allow=allow,
+                                    deny=deny, notes=notes))
+    if errors:
+        raise SpecError("invalid spec:\n  - " + "\n  - ".join(errors[:20]))
     return Spec(path=path, version=version, machines=machines)
 
 
@@ -192,35 +239,59 @@ def load_spec(path: Path) -> Spec:
         return _coerce_spec(json.loads(text), path)
     except json.JSONDecodeError:
         pass
+    except SpecError:
+        raise
+    except Exception as exc:  # TypeError from odd JSON shapes
+        raise SpecError(f"invalid spec in {path}: {exc}") from exc
     # 2) PyYAML when available
     try:
         import yaml  # type: ignore
 
-        return _coerce_spec(yaml.safe_load(text), path)
+        data = yaml.safe_load(text)
     except ImportError:
-        pass
+        data = None
     except Exception as exc:
-        if isinstance(exc, SpecError):
-            raise
         raise SpecError(f"YAML parse failed for {path}: {exc}") from exc
+    if data is not None:
+        try:
+            return _coerce_spec(data, path)
+        except SpecError:
+            raise
+        except Exception as exc:
+            raise SpecError(f"invalid spec in {path}: {exc}") from exc
     # 3) built-in subset parser
-    return _coerce_spec(_mini_yaml(text), path)
+    try:
+        return _coerce_spec(_mini_yaml(text), path)
+    except SpecError:
+        raise
+    except Exception as exc:
+        raise SpecError(f"invalid spec in {path}: {exc}") from exc
+
+
+def _yaml_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def draft_spec(machines: list[Any]) -> str:
-    lines = ["version: 1", "# Drafted by Meridian from anchored evidence. Review every edge before",
-             "# committing — the verifier enforces exactly what you accept here.", "machines:"]
+    def qlist(items) -> str:
+        return "[" + ", ".join(_yaml_quote(str(i)) for i in items) + "]"
+
+    lines = ["version: 1",
+             "# Drafted by Meridian from anchored evidence. Review every edge before",
+             "# committing — the verifier enforces exactly what you accept here.",
+             "machines:"]
     for machine in machines:
-        lines.append(f"  - id: {machine.id}")
+        lines.append(f"  - id: {_yaml_quote(machine.id)}")
         if machine.states:
-            lines.append("    states: [" + ", ".join(machine.states) + "]")
+            lines.append(f"    states: {qlist(machine.states)}")
         if machine.initial:
-            lines.append("    initial: [" + ", ".join(machine.initial) + "]")
+            lines.append(f"    initial: {qlist(machine.initial)}")
         allow = sorted({(t.src, t.dst) for t in machine.transitions if t.src})
         if allow:
             lines.append("    allow:")
             for src, dst in allow:
-                lines.append(f"      - [{src}, {dst}]")
+                lines.append(f"      - [{_yaml_quote(src)}, {_yaml_quote(dst)}]")
         else:
             lines.append("    allow: []")
         lines.append("    deny: []")

@@ -1,8 +1,8 @@
 name: meridian
-version: 1.0.0
+version: 1.0.1
 manifest_version: 2
 api_version: 1
-description: "Finds and verifies the implicit state machines hidden in your codebase. The agent proposes; a deterministic analyzer proves every state and transition against real source (file:line anchors); a hash-chained evidence ledger audits every verdict. Unreachable states, dead states, unguarded writes and spec-forbidden transitions — caught before they ship. No model calls, no network, no dependencies beyond the standard library."
+description: "Finds and verifies the implicit state machines hidden in your codebase. The agent proposes; a deterministic analyzer proves every state and transition against real source (file:line anchors); a hash-chained evidence ledger audits every verdict. Unreachable states, dead states, unguarded writes and spec-forbidden transitions — flagged on every edit that touches them. No model calls, no network, no dependencies beyond the standard library."
 author: unifyWeb3
 license: MIT
 homepage: https://github.com/unifyWeb3/meridian
@@ -26,4 +26,4 @@ config_schema:
   strict:
     type: bool
     default: false
-    description: "Treat unguarded writes as violations in meridian_spec check instead of warnings."
+    description: "Treat unguarded non-constructor writes as violations in meridian_spec check instead of warnings."

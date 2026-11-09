@@ -1,8 +1,0 @@
-[project]
-name = "meridian"
-version = "1.0.0"
-description = "Implicit state machines in your codebase: discovered, verified and enforced by Hermes Agent — deterministic analysis, hash-chained evidence ledger."
-readme = "README.md"
-requires-python = ">=3.9"
-dependencies = []
-license = { text = "MIT" }

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .model import Machine, ScanResult
 from .py_scan import scan_python
-from .repo import walk_source_files
+from .repo import DEFAULT_MAX_FILES, walk_source_files
 from .ts_scan import scan_typescript
 
 
@@ -40,10 +40,10 @@ def _merge(machines: list[Machine]) -> list[Machine]:
     return list(merged.values())
 
 
-def scan_root(root_path: str | Path) -> ScanResult:
+def scan_root(root_path: str | Path, *, max_files: int | None = DEFAULT_MAX_FILES) -> ScanResult:
     started = time.monotonic()
     root = Path(root_path).expanduser()
-    files, skipped = walk_source_files(root)
+    files, skipped = walk_source_files(root, max_files=max_files)
     py_files = [f for f in files if f.suffix.lower() == ".py"]
     other_files = [f for f in files if f.suffix.lower() != ".py"]
 
