@@ -94,6 +94,24 @@ def _tool_root(args: dict) -> Path:
     return _confine_root(path.resolve())
 
 
+_OUTSTANDING_LABELS = (
+    ("warnings", "warning"),
+    ("unguarded_writes", "unguarded write"),
+    ("dead_states", "dead state"),
+    ("unenforced_machines", "unenforced machine"),
+)
+
+
+def _outstanding_text(outstanding: dict) -> str:
+    """Human-readable list of what is still outstanding, e.g. '1 unguarded write'."""
+    parts = []
+    for key, label in _OUTSTANDING_LABELS:
+        count = int(outstanding.get(key, 0) or 0)
+        if count:
+            parts.append(f"{count} {label}{'s' if count != 1 else ''}")
+    return ", ".join(parts)
+
+
 def _err(message: str, **extra: Any) -> str:
     return json.dumps({"ok": False, "error": message, **extra})
 
@@ -224,12 +242,29 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
     not_enforced = sorted(set(uncovered) | set(unenforced))
     uncovered_enforced = [] if allow_uncovered else not_enforced
     relevant_total = sum(1 for m in result.machines if not _enum_only(m))
+    # Two distinct verdicts, so "no violations" is never read as "nothing is
+    # left to look at": spec-clean means no violation, healthy means no
+    # violation and nothing outstanding.
+    outstanding = {
+        "warnings": sum(len(v.get("warnings", [])) for v in verdicts),
+        "unguarded_writes": sum(len(v.get("unguarded_writes", [])) for v in verdicts),
+        "dead_states": sum(len(v.get("dead", [])) for v in verdicts),
+        "unenforced_machines": len(not_enforced),
+    }
+    if all_violations:
+        status = "violations"
+    elif any(outstanding.values()):
+        status = "spec-clean"
+    else:
+        status = "healthy"
     return {
         "root": result.root,
         "spec": str(spec_path) if spec_path else None,
         "spec_version": spec.version if spec else None,
         "strict": strict,
         "allow_uncovered": allow_uncovered,
+        "status": status,
+        "outstanding": outstanding,
         "coverage": {
             "spec_present": spec is not None,
             "covered_machines": covered,
@@ -457,7 +492,8 @@ def _report_markdown(root: Path, payload: dict) -> str:
         f"- Files scanned: {payload.get('files_scanned', 0)}",
         f"- Machines found: {len(payload.get('verdicts', []))}",
         f"- Spec: {payload.get('spec') or 'none (discovery only)'}",
-        f"- Outcome: {'PASS' if payload.get('ok') else 'FAIL'} - {payload.get('violation_count', 0)} violation(s)",
+        f"- Status: {payload.get('status', 'spec-clean')} - {payload.get('violation_count', 0)} violation(s)",
+        f"- Outstanding: {_outstanding_text(payload.get('outstanding', {})) or 'none'}",
         "",
         "## Machines",
         "",

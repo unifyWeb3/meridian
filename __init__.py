@@ -263,7 +263,8 @@ def _handle_meridian(raw_args: str) -> str:
         elif lines:
             lines.append("meridian: 0 violations, but machines are uncovered")
         else:
-            lines.append(f"meridian: OK - {len(payload['verdicts'])} machine(s) verified, 0 violations")
+            lines.append(f"meridian: {payload.get('status', 'spec-clean')} - "
+                         f"{len(payload['verdicts'])} machine(s) verified, 0 violations")
         return "\n".join(lines)
     return f"meridian: unknown subcommand '{sub}' - try /meridian help"
 
@@ -330,9 +331,13 @@ def _cli_dispatch(args):
             except Exception:
                 pass
             return 1
-        print(f"meridian check OK - {len(payload['verdicts'])} machine(s), 0 violations")
+        status = payload.get("status", "spec-clean")
+        outstanding = tools._outstanding_text(payload.get("outstanding", {}))
+        print(f"meridian check {status} - {len(payload['verdicts'])} machine(s), 0 violations"
+              + (f" ({outstanding})" if outstanding else ""))
         try:
-            ledger.append("check", {"root": str(root), "ok": True, "violation_count": 0})
+            ledger.append("check", {"root": str(root), "ok": True, "violation_count": 0,
+                                    "status": status})
         except Exception:
             pass
         return 0
@@ -457,7 +462,9 @@ def _setup_cli(subparser) -> None:
     p.add_argument("--machine", default=None, help="verify one machine id")
     p.add_argument("--strict", action="store_true", help="unguarded writes count as violations")
 
-    p = subs.add_parser("check", help="enforce .meridian.yaml; exit 1 on violations (CI)")
+    p = subs.add_parser("check", help="enforce .meridian.yaml; exit 1 on violations or "
+                                      "unenforced machines, 2 when the spec enforces nothing "
+                                      "(prints 'healthy' or 'spec-clean')")
     add_root(p)
     p.add_argument("--strict", action="store_true")
     p.add_argument("--allow-uncovered", action="store_true",

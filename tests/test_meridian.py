@@ -1024,5 +1024,107 @@ class StrictModeTests(TempRepoTest):
         self.assertIn("**Violations:**", buf.getvalue())
 
 
+class StatusWordingTests(TempRepoTest):
+    """Never report clean while something is still outstanding."""
+
+    def setUp(self):
+        super().setUp()
+        import meridian.tools as tools_mod
+
+        self._orig_agent_cwd = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        self.addCleanup(setattr, tools_mod, "_agent_cwd", self._orig_agent_cwd)
+        (self.tmp / ".meridian.yaml").write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "O.status"\n'
+            '    states: ["draft", "done"]\n'
+            '    initial: ["draft"]\n'
+            '    allow:\n'
+            '      - ["draft", "done"]\n',
+            encoding="utf-8")
+
+    def write_code(self, source: str) -> None:
+        (self.tmp / "o.py").write_text(source, encoding="utf-8")
+
+    CLEAN = ('class O:\n'
+             '    def __init__(self):\n'
+             '        self.status = "draft"\n'
+             '    def go(self):\n'
+             '        if self.status == "draft":\n'
+             '            self.status = "done"\n')
+    UNGUARDED = ('class O:\n'
+                 '    def __init__(self):\n'
+                 '        self.status = "draft"\n'
+                 '    def go(self):\n'
+                 '        if self.status == "draft":\n'
+                 '            self.status = "done"\n'
+                 '    def admin(self):\n'
+                 '        self.status = "forced"\n')
+
+    def check(self):
+        from meridian import tools
+
+        return json.loads(tools.meridian_spec({"root": str(self.tmp), "action": "check"}))["check"]
+
+    def cli_check(self):
+        import io
+        import contextlib
+        from meridian import _setup_cli, _cli_dispatch
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(["check", "--root", str(self.tmp)])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = _cli_dispatch(args)
+        return code, buf.getvalue()
+
+    def test_code_with_an_unguarded_write_is_spec_clean(self):
+        self.write_code(self.UNGUARDED)
+        check = self.check()
+        self.assertEqual(check["violation_count"], 0)
+        self.assertEqual(check["status"], "spec-clean")
+        self.assertNotEqual(check["status"], "healthy")
+        self.assertGreater(check["outstanding"]["unguarded_writes"], 0)
+
+    def test_the_cli_does_not_claim_ok_for_an_unguarded_write(self):
+        self.write_code(self.UNGUARDED)
+        code, out = self.cli_check()
+        self.assertEqual(code, 0)
+        self.assertIn("spec-clean", out)
+        self.assertNotIn("healthy", out)
+        self.assertNotIn("OK", out)
+
+    def test_a_fully_enforced_repo_is_healthy(self):
+        self.write_code(self.CLEAN)
+        check = self.check()
+        self.assertEqual(check["violation_count"], 0)
+        self.assertEqual(check["status"], "healthy")
+        code, out = self.cli_check()
+        self.assertEqual(code, 0)
+        self.assertIn("healthy", out)
+
+    def test_violations_are_never_reported_as_clean(self):
+        self.write_code(self.UNGUARDED)
+        from meridian import tools
+
+        (self.tmp / ".meridian.yaml").write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "O.status"\n'
+            '    states: ["draft", "done"]\n'
+            '    initial: ["draft"]\n'
+            '    allow:\n'
+            '      - ["draft", "done"]\n'
+            '    deny:\n'
+            '      - ["draft", "done"]\n',
+            encoding="utf-8")
+        out = json.loads(tools.meridian_spec({"root": str(self.tmp), "action": "check"}))
+        self.assertEqual(out["check"]["status"], "violations")
+        self.assertNotIn(out["check"]["status"], ("healthy", "spec-clean"))
+
+
 if __name__ == "__main__":
     unittest.main()
