@@ -1,8 +1,11 @@
 """The evidence ledger: append-only, SHA-256 hash-chained JSONL.
 
-Every scan, verdict, spec acceptance and check Meridian performs is an
-entry. Each entry commits to the hash of the previous one, so quietly
-editing history anywhere breaks the chain loudly.
+Every scan, check, spec acceptance and report Meridian performs is an entry.
+Each entry commits to the hash of the previous one, so quietly editing history
+anywhere breaks the chain loudly.
+
+The chain is unkeyed: it detects edits to the log, but anyone with write
+access to the ledger file can recompute it. Tamper-evident, not tamper-proof.
 
 Durability rules:
 - a sidecar `.lock` file serializes read-verify-append (POSIX flock;
@@ -14,8 +17,9 @@ Durability rules:
   quarantines the original, and stamps a `ledger_repair` event naming
   exactly what was dropped.
 
-What is stored: event names, machine ids, verdict counts, anchors
-(file:line) - never file contents, never secrets.
+What is stored: event names, machine ids and aggregate counts (files scanned,
+violations found, machines covered). Never verdicts, never file:line anchors,
+never spec or source revisions, never file contents, never secrets.
 """
 
 from __future__ import annotations

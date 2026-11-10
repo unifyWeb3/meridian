@@ -7,7 +7,7 @@ Meridian finds them, proves each transition against your source, and fails CI
 when one of them is illegal.
 
 Not a prompt, not a linter, not vibes. A deterministic analyzer with an
-acceptance gate and a tamper-evident ledger, running inside your Hermes agent
+acceptance gate and a hash-chained event log, running inside your Hermes agent
 or in your pipeline.
 
 ---
@@ -67,7 +67,7 @@ A prompt cannot do any of this mechanically:
 | You need                                        | Prompt/skill | Meridian |
 | ----------------------------------------------- | ------------ | -------- |
 | Deterministic failure on a forbidden edge       | no           | `check` exits 1, in CI |
-| Evidence you can audit later                    | no           | SHA-256 hash-chained, append-only ledger |
+| Evidence you can audit later                    | no           | SHA-256 hash-chained log of check events (counts and machine ids) |
 | Re-verification after every agent edit          | no           | `post_tool_call` hook |
 | Zero tokens, zero network, zero model required  | n/a          | stdlib only, installs nothing |
 
@@ -118,6 +118,12 @@ Agent: meridian_spec accept
 - `check` fails when a discovered machine has no spec entry (non-enum
   machines; enum-only machines carry no edges and are exempt). Waive with
   `--allow-uncovered`.
+- The ledger is an append-only log of the events Meridian ran: event names,
+  machine ids and aggregate counts (files scanned, violations found). It
+  stores no verdicts, no file:line anchors, no spec or source revisions and
+  no file contents. Its chain is **unkeyed SHA-256**, so it detects edits to
+  the log, but anyone with write access to the ledger file can recompute the
+  chain. Tamper-evident, not tamper-proof.
 
 ## Develop and test
 

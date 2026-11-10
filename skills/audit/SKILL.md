@@ -27,7 +27,9 @@ Order matters. Evidence first, interpretation second, acceptance third.
    turn; treat that note as a failing test, not as background noise.
 6. **Report** - `meridian_report` gives the Markdown summary (with ledger
    head). Attach it to the review/PR. `meridian_ledger(action="verify")`
-   proves the evidence trail was not edited.
+   detects edits to the event log. The chain is unkeyed SHA-256: it is
+   tamper-evident, not tamper-proof - someone with write access to the ledger
+   file can recompute it.
 
 ## What Meridian cannot know
 
