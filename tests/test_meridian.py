@@ -866,5 +866,69 @@ class AllowListSemanticsTests(TempRepoTest):
         self.assertTrue(machine.enforced)
 
 
+class CoverageEnforcementTests(TempRepoTest):
+    """Coverage counts what the spec enforces, not what it mentions."""
+
+    def setUp(self):
+        super().setUp()
+        import meridian.tools as tools_mod
+
+        self._orig_agent_cwd = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        self.addCleanup(setattr, tools_mod, "_agent_cwd", self._orig_agent_cwd)
+        (self.tmp / "o.py").write_text(
+            'class O:\n'
+            '    def __init__(self):\n'
+            '        self.status = "draft"\n'
+            '    def go(self):\n'
+            '        if self.status == "draft":\n'
+            '            self.status = "done"\n',
+            encoding="utf-8")
+
+    def check(self, spec_text):
+        from meridian import tools
+
+        (self.tmp / ".meridian.yaml").write_text(spec_text, encoding="utf-8")
+        return json.loads(tools.meridian_spec({"root": str(self.tmp), "action": "check"}))
+
+    NAMED_NO_RULES = ('version: 1\nmachines:\n  - id: "O.status"\n'
+                      '    states: ["draft", "done"]\n    initial: ["draft"]\n')
+    WITH_RULE = ('version: 1\nmachines:\n  - id: "O.status"\n'
+                 '    states: ["draft", "done"]\n    initial: ["draft"]\n'
+                 '    allow:\n      - ["draft", "done"]\n')
+
+    def test_a_machine_named_without_rules_is_not_covered(self):
+        cov = self.check(self.NAMED_NO_RULES)["check"]["coverage"]
+        self.assertEqual(cov["covered_machines"], [])
+        self.assertEqual(cov["unenforced_machines"], ["O.status"])
+
+    def test_a_machine_with_a_rule_is_covered(self):
+        cov = self.check(self.WITH_RULE)["check"]["coverage"]
+        self.assertEqual(cov["covered_machines"], ["O.status"])
+        self.assertEqual(cov["unenforced_machines"], [])
+
+    def test_coverage_reports_enforced_over_total(self):
+        cov = self.check(self.WITH_RULE)["check"]["coverage"]
+        self.assertEqual(cov["enforced"], 1)
+        self.assertEqual(cov["total"], 1)
+        cov = self.check(self.NAMED_NO_RULES)["check"]["coverage"]
+        self.assertEqual(cov["enforced"], 0)
+        self.assertEqual(cov["total"], 1)
+
+    def test_a_machine_named_without_rules_is_not_a_clean_pass(self):
+        out = self.check(self.NAMED_NO_RULES)["check"]
+        self.assertFalse(out["ok"])
+
+    def test_the_cli_fails_a_spec_that_names_a_machine_without_rules(self):
+        from meridian import _setup_cli, _cli_dispatch
+        import argparse
+
+        (self.tmp / ".meridian.yaml").write_text(self.NAMED_NO_RULES, encoding="utf-8")
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(["check", "--root", str(self.tmp)])
+        self.assertEqual(_cli_dispatch(args), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

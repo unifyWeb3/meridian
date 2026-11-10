@@ -182,15 +182,24 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
         return not m.transitions and not m.initial and m.id.startswith("enum:")
 
     if spec:
-        found_ids = {m.id for m in result.machines}
         spec_ids = spec.ids()
-        covered = sorted(found_ids & spec_ids)
+        # Being named in the spec is not being enforced: a machine counts as
+        # covered only when the spec states at least one rule for it.
+        covered = sorted(m.id for m in result.machines
+                         if m.id in spec_ids and not _enum_only(m)
+                         and spec.machine(m.id).enforced)
+        unenforced = sorted(m.id for m in result.machines
+                            if m.id in spec_ids and not _enum_only(m)
+                            and not spec.machine(m.id).enforced)
         uncovered = sorted(m.id for m in result.machines
                            if m.id not in spec_ids and not _enum_only(m))
+        # "covers nothing" stays about naming: a spec that names a machine but
+        # states no rule for it is a coverage failure (exit 1), not a spec
+        # that was never written (exit 2).
         spec_covers_nothing = not any(not _enum_only(m) and m.id in spec_ids
                                       for m in result.machines)
     else:
-        covered, uncovered, spec_covers_nothing = [], [], False
+        covered, uncovered, unenforced, spec_covers_nothing = [], [], [], False
 
     verdicts = []
     all_violations = []
@@ -212,7 +221,9 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
     shown_violations = all_violations[:50]
     # An `--allow-uncovered` waive covers uncovered machines, never a spec
     # that enforces nothing.
-    uncovered_enforced = [] if allow_uncovered else uncovered
+    not_enforced = sorted(set(uncovered) | set(unenforced))
+    uncovered_enforced = [] if allow_uncovered else not_enforced
+    relevant_total = sum(1 for m in result.machines if not _enum_only(m))
     return {
         "root": result.root,
         "spec": str(spec_path) if spec_path else None,
@@ -223,6 +234,9 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
             "spec_present": spec is not None,
             "covered_machines": covered,
             "uncovered_machines": uncovered,
+            "unenforced_machines": unenforced,
+            "enforced": len(covered),
+            "total": relevant_total,
             "spec_covers_nothing": spec_covers_nothing,
             "spec_machines_not_found": unfound,
         },

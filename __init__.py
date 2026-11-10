@@ -254,6 +254,8 @@ def _handle_meridian(raw_args: str) -> str:
         lines = []
         if cov.get("uncovered_machines"):
             lines.append(f"uncovered (no spec entry): {', '.join(cov['uncovered_machines'])}")
+        if cov.get("unenforced_machines"):
+            lines.append(f"unenforced (named, no rule): {', '.join(cov['unenforced_machines'])}")
         if payload["violation_count"]:
             lines.append(f"meridian: {payload['violation_count']} violation(s):")
             for v in payload["violations"][:10]:
@@ -306,13 +308,17 @@ def _cli_dispatch(args):
             return 2
         cov = payload.get("coverage", {})
         if cov.get("spec_covers_nothing"):
-            print("meridian check: the spec covers none of this repo's machines - refusing a false green (exit 2)")
+            print("meridian check: the spec has no entry for any machine of this repo - refusing a false green (exit 2)")
             return 2
-        if cov.get("uncovered_machines") and not allow_uncovered:
-            print(f"meridian check FAILED - {len(cov['uncovered_machines'])} machine(s) not covered by the spec:")
-            for mid in cov["uncovered_machines"]:
-                print(f"  COVERAGE  {mid}")
-            print("(run `hermes meridian spec accept --force`, or pass --allow-uncovered to waive)")
+        missing = list(cov.get("uncovered_machines", []))
+        named_only = list(cov.get("unenforced_machines", []))
+        if (missing or named_only) and not allow_uncovered:
+            print(f"meridian check FAILED - {len(missing) + len(named_only)} machine(s) not enforced by the spec:")
+            for mid in missing:
+                print(f"  COVERAGE    {mid}  (no entry in the spec)")
+            for mid in named_only:
+                print(f"  UNENFORCED  {mid}  (named in the spec, but it states no rule)")
+            print("(run `hermes meridian spec accept`, or pass --allow-uncovered to waive)")
             return 1
         if payload["violation_count"]:
             print(f"meridian check FAILED - {payload['violation_count']} violation(s):")
