@@ -525,7 +525,8 @@ def meridian_report(args: dict, **kwargs: Any) -> str:
     try:
         args = args or {}
         root = _tool_root(args)
-        payload = _verify_all(root, machine_id=None, strict=False)
+        strict = bool(args.get("strict", False))
+        payload = _verify_all(root, machine_id=None, strict=strict)
         if "error" in payload:
             return _err(payload["error"])
         report = _report_markdown(root, payload)

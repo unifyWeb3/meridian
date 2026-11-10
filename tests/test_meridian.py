@@ -930,5 +930,99 @@ class CoverageEnforcementTests(TempRepoTest):
         self.assertEqual(_cli_dispatch(args), 1)
 
 
+class StrictModeTests(TempRepoTest):
+    """Strict must mean the same thing in every tool that runs a check.
+
+    The code below has one guarded transition and one unguarded write
+    (`self.status = "forced"`), so strict off can only warn about it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import meridian.tools as tools_mod
+
+        self._orig_agent_cwd = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        self.addCleanup(setattr, tools_mod, "_agent_cwd", self._orig_agent_cwd)
+        (self.tmp / "o.py").write_text(
+            'class O:\n'
+            '    def __init__(self):\n'
+            '        self.status = "draft"\n'
+            '    def go(self):\n'
+            '        if self.status == "draft":\n'
+            '            self.status = "done"\n'
+            '    def admin(self):\n'
+            '        self.status = "forced"\n',
+            encoding="utf-8")
+        (self.tmp / ".meridian.yaml").write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "O.status"\n'
+            '    states: ["draft", "done"]\n'
+            '    initial: ["draft"]\n'
+            '    allow:\n'
+            '      - ["draft", "done"]\n',
+            encoding="utf-8")
+
+    def cli(self, *argv):
+        from meridian import _setup_cli, _cli_dispatch
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(list(argv))
+        return _cli_dispatch(args)
+
+    def test_verify_tool(self):
+        from meridian import tools
+
+        off = json.loads(tools.meridian_verify({"root": str(self.tmp)}))
+        on = json.loads(tools.meridian_verify({"root": str(self.tmp), "strict": True}))
+        self.assertEqual(off["violation_count"], 0)
+        warnings = [w for v in off["verdicts"] for w in v["warnings"]]
+        self.assertTrue(any("unguarded write" in w for w in warnings), warnings)
+        self.assertEqual(on["violation_count"], 1)
+
+    def test_spec_check_tool(self):
+        from meridian import tools
+
+        off = json.loads(tools.meridian_spec({"root": str(self.tmp), "action": "check"}))
+        on = json.loads(tools.meridian_spec({"root": str(self.tmp), "action": "check",
+                                            "strict": True}))
+        self.assertEqual(off["check"]["violation_count"], 0)
+        self.assertEqual(on["check"]["violation_count"], 1)
+
+    def test_report_tool(self):
+        from meridian import tools
+
+        off = json.loads(tools.meridian_report({"root": str(self.tmp)}))
+        on = json.loads(tools.meridian_report({"root": str(self.tmp), "strict": True}))
+        self.assertNotIn("**Violations:**", off["report_markdown"])
+        self.assertIn("**Violations:**", on["report_markdown"])
+
+    def test_cli_verify(self):
+        import io
+        import contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.cli("verify", "--root", str(self.tmp), "--strict")
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["violation_count"], 1)
+
+    def test_cli_check(self):
+        self.assertEqual(self.cli("check", "--root", str(self.tmp)), 0)
+        self.assertEqual(self.cli("check", "--root", str(self.tmp), "--strict"), 1)
+
+    def test_cli_report(self):
+        import io
+        import contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.cli("report", "--root", str(self.tmp), "--strict")
+        self.assertIn("**Violations:**", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -337,7 +337,8 @@ def _cli_dispatch(args):
             pass
         return 0
     if cmd == "report":
-        payload = tools._verify_all(root, machine_id=None, strict=False)
+        payload = tools._verify_all(root, machine_id=None,
+                                    strict=getattr(args, "strict", False) or _STRICT)
         report = tools._report_markdown(root, payload)
         out = getattr(args, "out", None)
         if out:
@@ -465,6 +466,8 @@ def _setup_cli(subparser) -> None:
     p = subs.add_parser("report", help="markdown report to stdout or --out")
     add_root(p)
     p.add_argument("--out", default=None)
+    p.add_argument("--strict", action="store_true",
+                   help="unguarded writes count as violations")
 
     p = subs.add_parser("diagram", help="mermaid or xstate for one machine")
     add_root(p)

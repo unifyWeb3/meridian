@@ -176,6 +176,10 @@ MERIDIAN_REPORT = {
                 "type": "string",
                 "description": "Optional path to write the report to (e.g. '.meridian/report.md'). Must resolve inside the scanned root; anything else is refused. Nothing is written when omitted.",
             },
+            "strict": {
+                "type": "boolean",
+                "description": "When true, unguarded non-constructor writes count as violations.",
+            },
         },
         "required": [],
     },
