@@ -48,6 +48,25 @@ def _hermes_home() -> Path:
     return Path(os.path.expanduser("~")).resolve() / ".hermes"
 
 
+def _guard_cwd(base: Path) -> None:
+    """Refuse a working directory that is too broad to confine anything.
+
+    Confinement is only a sandbox when the base is a project directory: at
+    the home directory or at the filesystem root it would allow exactly what
+    it is meant to prevent.
+    """
+    if base == Path("/") or base == Path.home().resolve():
+        raise RootError(
+            f"the working directory {base} is too broad to confine Meridian - "
+            "run it from a project directory")
+    for protected in (_hermes_home(), repo_mod.plugin_data_dir()):
+        protected = Path(protected).resolve()
+        if base == protected or base.is_relative_to(protected):
+            raise RootError(
+                f"the working directory {base} is the Hermes home - "
+                "run it from a project directory")
+
+
 def _confine_root(root: Path) -> Path:
     """Pin a root to the active working directory.
 
@@ -56,13 +75,11 @@ def _confine_root(root: Path) -> Path:
     inside the session's working directory before anything is read or written.
     """
     base = _agent_cwd()
+    _guard_cwd(base)
     if not root.is_relative_to(base):
         raise RootError(
             f"root must stay inside the working directory {base} - refusing {root}")
-    home = _hermes_home()
-    if base.is_relative_to(home):
-        return root  # the session itself lives under the Hermes home
-    for protected in (home, repo_mod.plugin_data_dir()):
+    for protected in (_hermes_home(), repo_mod.plugin_data_dir()):
         if root.is_relative_to(Path(protected).resolve()):
             raise RootError(f"refusing to work inside the Hermes home {protected}")
     return root

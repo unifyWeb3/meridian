@@ -750,5 +750,54 @@ class SpecAcceptMergeTests(TempRepoTest):
         self.assertIn(("draft", "refunded"), spec.machine("O.status").deny)
 
 
+class CwdGuardTests(TempRepoTest):
+    """Confinement is only a sandbox when the base is a project directory."""
+
+    def scan_with_cwd(self, cwd, args=None):
+        import meridian.tools as tools_mod
+
+        orig = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: Path(cwd)
+        old = os.getcwd()
+        os.chdir(cwd)
+        try:
+            return json.loads(tools_mod.meridian_scan(args or {}))
+        finally:
+            os.chdir(old)
+            tools_mod._agent_cwd = orig
+
+    def test_home_cwd_is_refused(self):
+        out = self.scan_with_cwd(Path.home())
+        self.assertFalse(out["ok"])
+        self.assertIn("project directory", out["error"])
+
+    def test_home_cwd_with_dot_root_is_refused(self):
+        out = self.scan_with_cwd(Path.home(), {"root": "."})
+        self.assertFalse(out["ok"])
+        self.assertIn("project directory", out["error"])
+
+    def test_filesystem_root_cwd_is_refused(self):
+        out = self.scan_with_cwd("/")
+        self.assertFalse(out["ok"])
+        self.assertIn("project directory", out["error"])
+
+    def test_hermes_home_cwd_is_refused(self):
+        home = Path(os.environ["HERMES_HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        out = self.scan_with_cwd(home)
+        self.assertFalse(out["ok"])
+        self.assertIn("Hermes home", out["error"])
+
+    def test_project_cwd_still_works(self):
+        project = self.tmp / "project"
+        project.mkdir()
+        (project / "o.py").write_text(
+            'class O:\n    def __init__(self):\n        self.status = "draft"\n',
+            encoding="utf-8")
+        out = self.scan_with_cwd(project)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["scan"]["root"], str(project.resolve()))
+
+
 if __name__ == "__main__":
     unittest.main()
