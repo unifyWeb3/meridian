@@ -1,0 +1,250 @@
+# Meridian - CLI smoke test (raw output)
+
+Every line below is the real output of the real `hermes meridian ...` entry
+point, captured in one run from the demo project directory.
+
+- Date: 2026-11-10
+- Host: Hermes Agent v0.23.0 (2026.9.24)
+- Code: the plugin working tree (branch fix/review-blockers), installed into the
+  local Hermes plugin home for the duration of this run
+- Working directory: examples/demo-order-pipeline (the cwd IS the project)
+- The CLI is operator-supplied and deliberately unconfined; the tool-level
+  `root` argument is confined to the agent working directory (see README)
+
+$ hermes meridian scan --root .
+meridian scan - 1 files, 4 machine(s), 4ms
+  Order.status                     conf=medium states=11 transitions=15
+  Order.payment_status             conf=medium states=4 transitions=3
+  enum:OrderStatus                 conf=medium states=11 transitions=0
+  enum:PaymentStatus               conf=medium states=4 transitions=0
+(exit 0)
+
+$ hermes meridian spec draft --root .
+version: 1
+# Drafted by Meridian from anchored evidence. Review every edge before
+# committing - the verifier enforces exactly what you accept here.
+machines:
+  - id: "Order.status"
+    states: ["cancelled", "delivered", "draft", "packed", "paid", "refunded", "returned", "shipped", "submitted", "unverified_shipping", "warehouse_hold"]
+    initial: ["draft"]
+    allow:
+      - ["delivered", "refunded"]
+      - ["delivered", "returned"]
+      - ["draft", "cancelled"]
+      - ["draft", "refunded"]
+      - ["draft", "submitted"]
+      - ["packed", "shipped"]
+      - ["paid", "packed"]
+      - ["paid", "refunded"]
+      - ["returned", "refunded"]
+      - ["shipped", "delivered"]
+      - ["submitted", "cancelled"]
+      - ["submitted", "paid"]
+      - ["unverified_shipping", "shipped"]
+    deny: []
+  - id: "Order.payment_status"
+    states: ["failed", "pending", "refunded", "succeeded"]
+    initial: ["pending"]
+    allow: []
+    deny: []
+  - id: "enum:OrderStatus"
+    states: ["cancelled", "delivered", "draft", "packed", "paid", "refunded", "returned", "shipped", "submitted", "unverified_shipping", "warehouse_hold"]
+    allow: []
+    deny: []
+  - id: "enum:PaymentStatus"
+    states: ["failed", "pending", "refunded", "succeeded"]
+    allow: []
+    deny: []
+
+(exit 0)
+
+$ hermes meridian check --root .
+meridian check FAILED - 2 violation(s):
+  orders.py:62  unverified_shipping -> shipped  (ship)  [not-allowed]
+  orders.py:78  draft -> refunded  (refund)  [deny]
+(exit 1)
+
+$ hermes meridian report --root .
+# Meridian Report
+
+- Repository: `/home/unify/nous/meridian/examples/demo-order-pipeline`
+- Files scanned: 1
+- Machines found: 4
+- Spec: /home/unify/nous/meridian/examples/demo-order-pipeline/.meridian.yaml
+- Status: violations - 2 violation(s)
+- Outstanding: 3 warnings, 3 unguarded writes, 3 dead states
+
+## Machines
+
+| Machine | Confidence | States | Unreachable | Dead | Violations |
+| --- | --- | --- | --- | --- | --- |
+| `Order.status` | medium | 11 | unverified_shipping, warehouse_hold | unverified_shipping, warehouse_hold | 2 |
+| `Order.payment_status` | medium | 4 | refunded | refunded | 0 |
+| `enum:OrderStatus` | medium | 11 | - | - | 0 |
+| `enum:PaymentStatus` | medium | 4 | - | - | 0 |
+
+## `Order.status`
+
+- States: cancelled, delivered, draft, packed, paid, refunded, returned, shipped, submitted, unverified_shipping, warehouse_hold
+- Initial: draft
+- Reachable: cancelled, delivered, draft, packed, paid, refunded, returned, shipped, submitted
+- **Unreachable states:** unverified_shipping, warehouse_hold
+- **Dead states (never assigned):** unverified_shipping, warehouse_hold
+- Terminal states: cancelled, refunded
+
+Transitions:
+
+- `*` → `draft` via `__init__()` - orders.py:39 (UNGUARDED)
+- `draft` → `submitted` via `submit()` - orders.py:44 (guarded)
+- `submitted` → `paid` via `mark_paid()` - orders.py:49 (guarded)
+- `paid` → `packed` via `pack()` - orders.py:55 (guarded)
+- `packed` → `shipped` via `ship()` - orders.py:60 (guarded)
+- `unverified_shipping` → `shipped` via `ship()` - orders.py:62 (guarded)
+- `shipped` → `delivered` via `deliver()` - orders.py:67 (guarded)
+- `delivered` → `returned` via `request_return()` - orders.py:72 (guarded)
+- `delivered` → `refunded` via `refund()` - orders.py:78 (guarded)
+- `draft` → `refunded` via `refund()` - orders.py:78 (guarded)
+- `paid` → `refunded` via `refund()` - orders.py:78 (guarded)
+- `returned` → `refunded` via `refund()` - orders.py:78 (guarded)
+- `*` → `delivered` via `force_close()` - orders.py:84 (UNGUARDED)
+- `draft` → `cancelled` via `cancel()` - orders.py:89 (guarded)
+- `submitted` → `cancelled` via `cancel()` - orders.py:89 (guarded)
+
+**Violations:**
+
+- `orders.py:62` - unverified_shipping -> shipped is not in the allowed transitions of Order.status
+- `orders.py:78` - spec explicitly forbids draft -> refunded
+- note: 2 unguarded write(s) treated as potentially reachable
+
+## `Order.payment_status`
+
+- States: failed, pending, refunded, succeeded
+- Initial: pending
+- Reachable: failed, pending, succeeded
+- **Unreachable states:** refunded
+- **Dead states (never assigned):** refunded
+- Terminal states: failed, pending, succeeded
+
+Transitions:
+
+- `*` → `pending` via `__init__()` - orders.py:40 (UNGUARDED)
+- `*` → `succeeded` via `mark_paid()` - orders.py:50 (UNGUARDED)
+- `*` → `failed` via `refund()` - orders.py:79 (UNGUARDED)
+- note: 3 unguarded write(s) treated as potentially reachable
+
+## `enum:OrderStatus`
+
+- States: cancelled, delivered, draft, packed, paid, refunded, returned, shipped, submitted, unverified_shipping, warehouse_hold
+- Initial: not discovered
+- Reachable: cancelled, delivered, draft, packed, paid, refunded, returned, shipped, submitted, unverified_shipping, warehouse_hold
+- Terminal states: cancelled, delivered, draft, packed, paid, refunded, returned, shipped, submitted, unverified_shipping, warehouse_hold
+
+Transitions:
+
+- note: no initial state discovered; unreachable-states not reported
+- note: enum-only machine: transitions were never anchored; dead-state reporting disabled
+
+## `enum:PaymentStatus`
+
+- States: failed, pending, refunded, succeeded
+- Initial: not discovered
+- Reachable: failed, pending, refunded, succeeded
+- Terminal states: failed, pending, refunded, succeeded
+
+Transitions:
+
+- note: no initial state discovered; unreachable-states not reported
+- note: enum-only machine: transitions were never anchored; dead-state reporting disabled
+
+## Diagrams
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> submitted : submit
+    submitted --> paid : mark_paid
+    paid --> packed : pack
+    packed --> shipped : ship
+    unverified_shipping --> shipped : ship
+    shipped --> delivered : deliver
+    delivered --> returned : request_return
+    delivered --> refunded : refund
+    draft --> refunded : refund
+    paid --> refunded : refund
+    returned --> refunded : refund
+    draft --> cancelled : cancel
+    submitted --> cancelled : cancel
+    note right of unverified_shipping: never assigned (dead)
+    note right of warehouse_hold: never assigned (dead)
+```
+
+## Evidence ledger
+
+- Entries: 66
+- Chain valid: yes
+- Head: `f1debf0b692fe92dc2e8b004e3eb5c16af0509cfa375299801ea93f3d6fd745a`
+
+_Generated by Meridian. Every path:line anchor above is anchored in source; nothing in this report is model-asserted._
+
+(exit 0)
+
+$ hermes meridian ledger verify
+meridian ledger OK - 66 entries, head f1debf0b692fe92dc2e8b004e3eb5c16af0509cfa375299801ea93f3d6fd745a
+(exit 0)
+
+$ hermes meridian ledger show --limit 10
+  #57 2026-11-10T11:07:05Z verify
+  #58 2026-11-10T11:07:05Z report
+  #59 2026-11-10T11:07:05Z report
+  #60 2026-11-10T11:07:05Z check
+  #61 2026-11-10T11:07:05Z check
+  #62 2026-11-10T11:07:05Z spec_accept
+  #63 2026-11-10T11:21:14Z check
+  #64 2026-11-10T11:22:18Z check
+  #65 2026-11-10T11:22:42Z check
+  #66 2026-11-10T11:23:10Z check
+(exit 0)
+
+$ hermes meridian ledger stats
+{
+  "entries": 66,
+  "events": {
+    "check": 43,
+    "verify": 6,
+    "report": 7,
+    "auto_reverify": 1,
+    "scan": 6,
+    "spec_accept": 3
+  },
+  "path": "/home/unify/.hermes/plugin-data/meridian/ledger.jsonl"
+}
+(exit 0)
+
+$ hermes meridian spec accept --root .
+wrote /home/unify/nous/meridian/examples/demo-order-pipeline/.meridian.yaml
+(exit 0)
+
+$ hermes meridian check --root .
+meridian check FAILED - 1 violation(s):
+  orders.py:78  draft -> refunded  (refund)  [deny]
+(exit 1)
+
+## Notes on the run
+
+- The `spec accept` step rewrites `examples/demo-order-pipeline/.meridian.yaml`.
+  The shipped fixture was restored from git right after this capture, so the
+  example keeps its two seeded findings.
+- Accepting merges, it does not overwrite. The reviewed deny rule
+  `draft -> refunded` survived the merge, which is why the check after accept
+  still fails on it.
+- The merge also adds newly observed edges to the allow list, so the second
+  seeded finding (`unverified_shipping -> shipped`, not-allowed) became an
+  allowed edge. That is the merge contract: deny rules are authoritative, an
+  observed edge is proposed as allowed.
+- The merge rewrites the file with its own header comment, so a hand-written
+  comment above `machines:` is not preserved.
+- The ledger stores event names, machine ids and aggregate counts. It does not
+  store verdicts, file:line anchors, spec revisions or source revisions, and
+  its SHA-256 chain is unkeyed: it detects edits, but anyone with write access
+  to the ledger file can recompute the chain.
+
