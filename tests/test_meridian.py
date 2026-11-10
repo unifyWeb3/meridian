@@ -799,5 +799,72 @@ class CwdGuardTests(TempRepoTest):
         self.assertEqual(out["scan"]["root"], str(project.resolve()))
 
 
+class AllowListSemanticsTests(TempRepoTest):
+    """An absent allow key states no policy; an explicit empty list forbids
+    every transition. Treating both as "unrestricted" is a false green."""
+
+    def setUp(self):
+        super().setUp()
+        import meridian.tools as tools_mod
+
+        self._orig_agent_cwd = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        self.addCleanup(setattr, tools_mod, "_agent_cwd", self._orig_agent_cwd)
+        (self.tmp / "o.py").write_text(
+            'class O:\n'
+            '    def __init__(self):\n'
+            '        self.status = "draft"\n'
+            '    def go(self):\n'
+            '        if self.status == "draft":\n'
+            '            self.status = "done"\n',
+            encoding="utf-8")
+
+    def check(self, spec_text):
+        from meridian import tools
+
+        (self.tmp / ".meridian.yaml").write_text(spec_text, encoding="utf-8")
+        return json.loads(tools.meridian_spec({"root": str(self.tmp), "action": "check"}))
+
+    ABSENT = ('version: 1\nmachines:\n  - id: "O.status"\n'
+              '    states: ["draft", "done"]\n    initial: ["draft"]\n')
+    EMPTY = ('version: 1\nmachines:\n  - id: "O.status"\n'
+             '    states: ["draft", "done"]\n    initial: ["draft"]\n    allow: []\n')
+
+    def test_explicit_empty_allow_forbids_every_transition(self):
+        out = self.check(self.EMPTY)
+        check = out["check"]
+        self.assertEqual(check["violation_count"], 1)
+        self.assertEqual(check["violations"][0]["rule"], "not-allowed")
+
+    def test_absent_allow_key_states_no_policy(self):
+        out = self.check(self.ABSENT)
+        check = out["check"]
+        self.assertEqual(check["violation_count"], 0)
+        notes = [n for v in check["verdicts"] for n in v["notes"]]
+        self.assertTrue(any("not enforced" in n for n in notes), notes)
+
+    def test_the_two_cases_differ(self):
+        empty = self.check(self.EMPTY)["check"]
+        absent = self.check(self.ABSENT)["check"]
+        self.assertEqual(empty["violation_count"], 1)
+        self.assertEqual(absent["violation_count"], 0)
+
+    def test_a_spec_without_the_key_still_loads_and_keeps_working(self):
+        from meridian.analyzer.spec import load_spec
+
+        self.check(self.ABSENT)
+        machine = load_spec(self.tmp / ".meridian.yaml").machine("O.status")
+        self.assertIsNone(machine.allow)  # absent key, not an empty list
+        self.assertFalse(machine.enforced)
+
+    def test_an_explicit_empty_list_is_an_enforced_rule(self):
+        from meridian.analyzer.spec import load_spec
+
+        self.check(self.EMPTY)
+        machine = load_spec(self.tmp / ".meridian.yaml").machine("O.status")
+        self.assertEqual(machine.allow, set())
+        self.assertTrue(machine.enforced)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -27,9 +27,23 @@ class SpecMachine:
     id: str
     states: list[str] = field(default_factory=list)
     initial: list[str] = field(default_factory=list)
-    allow: set[tuple[str, str]] = field(default_factory=set)
+    # None means the key is absent: no policy for this machine. An empty set
+    # means an explicit empty list: no transition of this machine is allowed.
+    allow: set[tuple[str, str]] | None = None
     deny: set[tuple[str, str]] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
+
+    @property
+    def enforced(self) -> bool:
+        """True when the spec states at least one rule for this machine.
+
+        An absent `allow` key together with an empty `deny` states no rule at
+        all: the machine is named but nothing is enforced for it. An explicit
+        empty `allow` list is a rule - it forbids every transition.
+        """
+        if self.deny:
+            return True
+        return self.allow is not None
 
 
 @dataclass
@@ -230,7 +244,9 @@ def _coerce_spec(data: Any, path: Path) -> Spec:
             machine_id = f"machines[{i}]"
         states = _str_list(raw.get("states"), f"{machine_id}.states")
         initial = _str_list(raw.get("initial"), f"{machine_id}.initial")
-        allow = _edges(raw.get("allow"), "allow", machine_id)
+        # absent key != empty list: an absent allow key means "no policy",
+        # an explicit empty list means "no transition is allowed".
+        allow = _edges(raw.get("allow"), "allow", machine_id) if "allow" in raw else None
         deny = _edges(raw.get("deny"), "deny", machine_id)
         notes = _str_list(raw.get("notes"), f"{machine_id}.notes")
         known = {"id", "states", "initial", "allow", "deny", "notes"}
@@ -329,7 +345,9 @@ def _machine_lines(machine_id: str, states: list[str], initial: list[str],
         lines.append(f"    states: {qlist(states)}")
     if initial:
         lines.append(f"    initial: {qlist(initial)}")
-    if allow:
+    if allow is None:
+        pass  # no allow key: the machine has no allow policy at all
+    elif allow:
         lines.append("    allow:")
         for src, dst in sorted(allow):
             lines.append(f"      - [{_yaml_quote(src)}, {_yaml_quote(dst)}]")
@@ -369,9 +387,17 @@ def merge_spec(existing: Spec, machines: list[Any]) -> str:
              "machines:"]
     for machine in existing.machines:
         fresh = discovered.get(machine.id)
-        allow = set(machine.allow)
+        allow = machine.allow
         if fresh:
-            allow |= {edge for edge in fresh["allow"] if edge not in machine.deny}
+            new_edges = {edge for edge in fresh["allow"] if edge not in machine.deny}
+            if allow is None:
+                # no allow policy yet: take the edges the draft discovered
+                allow = new_edges or None
+            elif allow:
+                # an authored list: newly discovered edges are added to it
+                allow = allow | new_edges
+            # an explicit empty allow list is an authored policy ("nothing is
+            # allowed") and is never filled in behind the reviewer's back
         lines += _machine_lines(machine.id, machine.states, machine.initial,
                                 allow, machine.deny, machine.notes)
     for machine in machines:

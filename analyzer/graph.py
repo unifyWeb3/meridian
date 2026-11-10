@@ -158,6 +158,10 @@ def analyze_machine(
             warnings.append(f"spec lists states never found in code: {', '.join(missing)}")
         deny = spec.deny or set()
         allow = spec.allow
+        if not spec.enforced:
+            notes.append("spec entry states no allow or deny rule - this machine is not enforced")
+        elif allow is not None and not allow and not deny:
+            notes.append("spec allow list is empty - every transition of this machine is forbidden")
         for t in machine.transitions:
             if t.src is None:
                 if t.kind == "constructor":
@@ -181,7 +185,9 @@ def analyze_machine(
                 violations.append(Violation(
                     machine.id, t.src, t.dst, t.file, t.line, t.via, "deny",
                     f"spec explicitly forbids {t.src} -> {t.dst}"))
-            elif allow and edge not in allow:
+            elif allow is not None and edge not in allow:
+                # An absent allow key means "no policy for this machine"; an
+                # explicit empty list means "no transition is allowed".
                 violations.append(Violation(
                     machine.id, t.src, t.dst, t.file, t.line, t.via, "not-allowed",
                     f"{t.src} -> {t.dst} is not in the allowed transitions of {machine.id}"))
