@@ -567,5 +567,79 @@ class RootConfinementTests(TempRepoTest):
         self.assertFalse((Path(os.path.expanduser("~")) / ".meridian.yaml").exists())
 
 
+class HookCorrelationTests(TempRepoTest):
+    """A hook finding must reach the session that caused it - and only that one.
+
+    The host passes a task id AND a session id, and they are not the same
+    value: storing under one and reading under the other loses the finding,
+    and a shared bucket leaks it into somebody else's chat.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import meridian
+
+        self.mod = meridian
+        meridian._PENDING_NOTES.clear()
+        self.project = self.tmp / "project"
+        self.project.mkdir(parents=True, exist_ok=True)
+        (self.project / "o.py").write_text(
+            'class O:\n'
+            '    def __init__(self):\n'
+            '        self.status = "draft"\n'
+            '    def refund(self):\n'
+            '        if self.status == "draft":\n'
+            '            self.status = "refunded"\n',
+            encoding="utf-8")
+        (self.project / ".meridian.yaml").write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "O.status"\n'
+            '    states: ["draft", "refunded"]\n'
+            '    initial: ["draft"]\n'
+            '    allow:\n'
+            '      - ["draft", "refunded"]\n'
+            '    deny:\n'
+            '      - ["draft", "refunded"]\n',
+            encoding="utf-8")
+
+    def test_finding_surfaces_on_the_next_turn_of_the_same_session(self):
+        self.mod._on_post_tool_call(
+            "write_file", {"path": str(self.project / "o.py")}, "ok",
+            task_id="task-1", session_id="session-1")
+        context = self.mod._on_pre_llm_call(session_id="session-1")
+        self.assertIsNotNone(context)
+        self.assertIn("violates O.status", context["context"])
+
+    def test_a_second_session_never_sees_them(self):
+        self.mod._on_post_tool_call(
+            "write_file", {"path": str(self.project / "o.py")}, "ok",
+            task_id="task-1", session_id="session-1")
+        self.assertIsNone(self.mod._on_pre_llm_call(session_id="session-2"))
+
+    def test_the_task_id_bucket_is_not_read(self):
+        self.mod._on_post_tool_call(
+            "write_file", {"path": str(self.project / "o.py")}, "ok",
+            task_id="task-1", session_id="session-1")
+        # the finding was stored under the session, not under the task
+        self.assertIsNone(self.mod._on_pre_llm_call(session_id="task-1"))
+
+    def test_no_shared_local_bucket(self):
+        # A finding with no session identity is dropped, not parked in a
+        # bucket that every chat would read.
+        self.mod._on_post_tool_call(
+            "write_file", {"path": str(self.project / "o.py")}, "ok")
+        self.assertEqual(self.mod._PENDING_NOTES, {})
+        self.assertIsNone(self.mod._on_pre_llm_call(session_id="session-1"))
+        self.assertIsNone(self.mod._on_pre_llm_call(session_id=""))
+
+    def test_notes_are_consumed_once(self):
+        self.mod._on_post_tool_call(
+            "write_file", {"path": str(self.project / "o.py")}, "ok",
+            task_id="task-1", session_id="session-1")
+        self.assertIsNotNone(self.mod._on_pre_llm_call(session_id="session-1"))
+        self.assertIsNone(self.mod._on_pre_llm_call(session_id="session-1"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -99,19 +99,25 @@ def _store_note(key: str, text: str) -> None:
         del _PENDING_NOTES[k]
 
 
+def _session_key(session_id=None, task_id=None) -> str:
+    """The bucket a session's hook notes live under.
+
+    One key per session and no shared bucket at all: a finding produced in
+    one chat must never surface in another. The task id is only a fallback
+    for hosts that pass no session id; when neither is known the notes are
+    dropped rather than parked where every chat would read them.
+    """
+    return str(session_id or task_id or "")
+
+
 def _take_notes(key: str) -> list[str]:
-    # The session-keyed bucket is popped when we know the session; the shared
-    # "local" bucket (notes from hooks that got no session/task id) is popped
-    # as a fallback for whoever asks next - in gateway deployments a note
-    # may surface in the next turn of any chat in the same profile. That is
-    # disclosed behavior, not a correlation guarantee.
-    notes = [t for _, t in _PENDING_NOTES.pop(key, [])]
-    if key != "local":
-        notes += [t for _, t in _PENDING_NOTES.pop("local", [])]
-    return notes
+    # Session-keyed only: the bucket is popped for the session that owns it.
+    # There is no shared "local" fallback - that one leaked notes from one
+    # chat into the next turn of any other chat in the same profile.
+    return [t for _, t in _PENDING_NOTES.pop(key, [])]
 
 
-def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
+def _on_post_tool_call(tool_name, args, result, task_id=None, session_id=None, **kwargs):
     """Re-verify the touched repo right after the agent edits it. Never blocks,
     never raises: worst case it logs and the next turn carries no note."""
     try:
@@ -171,7 +177,11 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, **kwargs):
             text = ("Meridian - this edit touched state-machine code:\n"
                     + "\n".join(f"  - {n}" for n in notes_for_key[:8])
                     + "\nRun meridian_verify for full details.")
-            _store_note(str(task_id or "local"), text)
+            # Stored under the session id - the same key pre_llm_call reads,
+            # so the finding surfaces on the next turn of THIS session.
+            key = _session_key(session_id, task_id)
+            if key:
+                _store_note(key, text)
         return None
     except Exception:
         logger.debug("meridian auto-reverify failed", exc_info=True)
@@ -184,9 +194,11 @@ def load_spec_safe(spec_path: Path):
     return load_spec(spec_path)
 
 
-def _on_pre_llm_call(session_id=None, user_message="", **kwargs):
+def _on_pre_llm_call(session_id=None, task_id=None, user_message="", **kwargs):
     try:
-        key = str(session_id or "local")
+        key = _session_key(session_id, task_id)
+        if not key:
+            return None
         notes = _take_notes(key)
         if not notes:
             return None
