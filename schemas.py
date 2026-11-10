@@ -93,8 +93,10 @@ MERIDIAN_SPEC = {
         "Work with the .meridian.yaml spec - the enforcement layer. Actions: "
         "'draft' returns the spec Meridian would accept today (every edge is an "
         "observed, anchored transition; you review it with the user before "
-        "accepting); 'accept' writes it (refuses to overwrite without force, keeps "
-        "a .bak); 'show' prints the current spec; 'check' is the CI primitive: "
+        "accepting); 'accept' writes it (merges into an existing .meridian.yaml: "
+        "every deny rule and authored edge you reviewed survives, only newly "
+        "discovered machines and edges are added, a .bak is kept); 'show' prints "
+        "the current spec; 'check' is the CI primitive: "
         "scan + verify against the accepted spec and report violations with "
         "file:line anchors. 'check' fails when the spec does not cover every "
         "discovered machine (pass allow_uncovered=true to waive that), and "
@@ -112,7 +114,7 @@ MERIDIAN_SPEC = {
             },
             "force": {
                 "type": "boolean",
-                "description": "For 'accept': overwrite an existing .meridian.yaml (a .bak copy is kept).",
+                "description": "For 'accept': kept for compatibility. Accepting merges into an existing .meridian.yaml and never overwrites reviewed deny rules.",
             },
             "strict": {
                 "type": "boolean",

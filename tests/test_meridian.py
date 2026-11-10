@@ -641,5 +641,114 @@ class HookCorrelationTests(TempRepoTest):
         self.assertIsNone(self.mod._on_pre_llm_call(session_id="session-1"))
 
 
+class SpecAcceptMergeTests(TempRepoTest):
+    """Accepting a spec must never throw away reviewed rules."""
+
+    def setUp(self):
+        super().setUp()
+        import meridian.tools as tools_mod
+
+        self._orig_agent_cwd = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        self.addCleanup(setattr, tools_mod, "_agent_cwd", self._orig_agent_cwd)
+        (self.tmp / "o.py").write_text(
+            'class O:\n'
+            '    def __init__(self):\n'
+            '        self.status = "draft"\n'
+            '    def refund(self):\n'
+            '        if self.status == "draft":\n'
+            '            self.status = "refunded"\n',
+            encoding="utf-8")
+        self.spec_path = self.tmp / ".meridian.yaml"
+        self.spec_path.write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "O.status"\n'
+            '    states: ["draft", "refunded", "shipped"]\n'
+            '    initial: ["draft"]\n'
+            '    allow:\n'
+            '      - ["draft", "shipped"]\n'
+            '    deny:\n'
+            '      - ["draft", "refunded"]\n',
+            encoding="utf-8")
+
+    def accept(self, **args):
+        from meridian import tools
+
+        args.setdefault("root", str(self.tmp))
+        args.setdefault("action", "accept")
+        return json.loads(tools.meridian_spec(args))
+
+    def test_accept_keeps_the_deny_rule(self):
+        out = self.accept()
+        self.assertTrue(out["ok"], out)
+        spec = load_spec(self.spec_path)
+        machine = spec.machine("O.status")
+        self.assertIn(("draft", "refunded"), machine.deny)
+
+    def test_accept_keeps_the_deny_rule_with_force(self):
+        out = self.accept(force=True)
+        self.assertTrue(out["ok"], out)
+        spec = load_spec(self.spec_path)
+        self.assertIn(("draft", "refunded"), spec.machine("O.status").deny)
+
+    def test_accept_keeps_the_deny_rule_on_disk(self):
+        self.accept()
+        text = self.spec_path.read_text(encoding="utf-8")
+        self.assertIn('"draft", "refunded"', text)
+        # the denied edge is never quietly re-allowed
+        spec = load_spec(self.spec_path)
+        machine = spec.machine("O.status")
+        self.assertNotIn(("draft", "refunded"), machine.allow)
+        # the authored allow rule survives too
+        self.assertIn(("draft", "shipped"), machine.allow)
+
+    def test_accept_adds_newly_discovered_machines(self):
+        (self.tmp / "p.py").write_text(
+            'class P:\n'
+            '    def __init__(self):\n'
+            '        self.state = "new"\n',
+            encoding="utf-8")
+        out = self.accept()
+        self.assertTrue(out["ok"], out)
+        spec = load_spec(self.spec_path)
+        self.assertIn("O.status", spec.ids())
+        self.assertIn("P.state", spec.ids())
+        self.assertIn(("draft", "refunded"), spec.machine("O.status").deny)
+
+    def test_accept_keeps_a_machine_that_is_no_longer_discovered(self):
+        self.spec_path.write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "Gone.status"\n'
+            '    states: ["a"]\n'
+            '    deny:\n'
+            '      - ["a", "b"]\n',
+            encoding="utf-8")
+        out = self.accept()
+        self.assertTrue(out["ok"], out)
+        spec = load_spec(self.spec_path)
+        self.assertIn("Gone.status", spec.ids())
+        self.assertIn(("a", "b"), spec.machine("Gone.status").deny)
+
+    def test_merged_spec_still_parses_and_enforces(self):
+        self.accept()
+        spec = load_spec(self.spec_path)
+        machine = spec.machine("O.status")
+        self.assertEqual(machine.allow, {("draft", "shipped")})
+        self.assertEqual(machine.deny, {("draft", "refunded")})
+
+    def test_cli_accept_keeps_the_deny_rule(self):
+        from meridian import _setup_cli, _cli_dispatch
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(["spec", "accept", "--root", str(self.tmp)])
+        self.assertEqual(_cli_dispatch(args), None)
+        spec = load_spec(self.spec_path)
+        self.assertIn(("draft", "refunded"), spec.machine("O.status").deny)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ from typing import Any
 from .analyzer import graph, ledger, repo as repo_mod
 from .analyzer.model import cap_list, dumps
 from .analyzer.scan import scan_root
-from .analyzer.spec import SpecError, draft_spec, load_spec, write_spec
+from .analyzer.spec import SpecError, draft_spec, load_spec, merge_spec, write_spec
 
 
 class RootError(ValueError):
@@ -356,15 +356,25 @@ def meridian_spec(args: dict, **kwargs: Any) -> str:
                 _ledger_event("spec_draft", {"root": result.root, "machines": len(result.machines)})
                 return _ok({"spec_yaml": content, "machines": len(result.machines),
                             "note": "Review every edge, then 'accept' to enforce."})
-            force = bool(args.get("force", False))
+            # Accepting is not a rewrite: an accepted spec is merged into, so
+            # every deny rule and authored edge the reviewer approved survives.
+            merged = False
+            existing_path = root / ".meridian.yaml"
+            if not existing_path.is_file():
+                existing_path = repo_mod.find_spec(root)
+            if existing_path is not None and existing_path.is_file():
+                content = merge_spec(load_spec(existing_path), result.machines)
+                merged = True
             try:
-                path = write_spec(root, content, force=force)
+                path = write_spec(root, content, force=True)
             except SpecError as exc:
                 return _err(str(exc))
             _ledger_event("spec_accept", {"root": str(root), "path": str(path),
                                           "machines": len(result.machines)})
             return _ok({"written": str(path), "machines": len(result.machines),
-                        "note": "Spec accepted. `hermes meridian check` (or meridian_spec check) now enforces it."})
+                        "merged": merged,
+                        "note": ("Spec accepted (merged into the existing one - deny rules kept). "
+                                 "`hermes meridian check` (or meridian_spec check) now enforces it.")})
         spec_path = repo_mod.find_spec(root)
         if action == "show":
             if not spec_path:

@@ -318,6 +318,71 @@ def draft_spec(machines: list[Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _machine_lines(machine_id: str, states: list[str], initial: list[str],
+                   allow: set[tuple[str, str]], deny: set[tuple[str, str]],
+                   notes: list[str]) -> list[str]:
+    def qlist(items) -> str:
+        return "[" + ", ".join(_yaml_quote(str(i)) for i in items) + "]"
+
+    lines = [f"  - id: {_yaml_quote(machine_id)}"]
+    if states:
+        lines.append(f"    states: {qlist(states)}")
+    if initial:
+        lines.append(f"    initial: {qlist(initial)}")
+    if allow:
+        lines.append("    allow:")
+        for src, dst in sorted(allow):
+            lines.append(f"      - [{_yaml_quote(src)}, {_yaml_quote(dst)}]")
+    else:
+        lines.append("    allow: []")
+    if deny:
+        lines.append("    deny:")
+        for src, dst in sorted(deny):
+            lines.append(f"      - [{_yaml_quote(src)}, {_yaml_quote(dst)}]")
+    else:
+        lines.append("    deny: []")
+    if notes:
+        lines.append("    notes:")
+        for note in notes:
+            lines.append(f"      - {_yaml_quote(note)}")
+    return lines
+
+
+def merge_spec(existing: Spec, machines: list[Any]) -> str:
+    """Merge freshly discovered machines into an accepted spec, never destructively.
+
+    Every deny entry and every authored rule of the accepted spec survives:
+    the merge only adds machines and edges the accepted spec does not mention
+    yet. An edge that is already denied is never added to `allow`.
+    """
+    discovered: dict[str, dict[str, Any]] = {}
+    for machine in machines:
+        discovered[machine.id] = {
+            "states": list(machine.states),
+            "initial": list(machine.initial),
+            "allow": {(t.src, t.dst) for t in machine.transitions if t.src},
+        }
+    known = {m.id for m in existing.machines}
+    lines = [f"version: {existing.version}",
+             "# Accepted by Meridian. Deny rules and authored edges are kept;",
+             "# newly discovered machines and edges are merged in.",
+             "machines:"]
+    for machine in existing.machines:
+        fresh = discovered.get(machine.id)
+        allow = set(machine.allow)
+        if fresh:
+            allow |= {edge for edge in fresh["allow"] if edge not in machine.deny}
+        lines += _machine_lines(machine.id, machine.states, machine.initial,
+                                allow, machine.deny, machine.notes)
+    for machine in machines:
+        if machine.id in known:
+            continue
+        fresh = discovered[machine.id]
+        lines += _machine_lines(machine.id, fresh["states"], fresh["initial"],
+                                fresh["allow"], set(), [])
+    return "\n".join(lines) + "\n"
+
+
 def write_spec(root: Path, content: str, *, force: bool = False) -> Path:
     target = root / ".meridian.yaml"
     if target.exists() and not force:

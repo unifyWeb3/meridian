@@ -371,10 +371,20 @@ def _cli_dispatch(args):
             return
         if action == "accept":
             result = scan_root(root)
-            from .analyzer.spec import draft_spec, write_spec
+            from .analyzer.spec import draft_spec, merge_spec, write_spec
 
+            # Accepting merges into an accepted spec: deny rules and authored
+            # edges are never overwritten by a fresh scan.
+            content = draft_spec(result.machines)
+            existing = root / ".meridian.yaml"
+            if existing.is_file():
+                try:
+                    content = merge_spec(load_spec_safe(existing), result.machines)
+                except Exception as exc:
+                    print(f"meridian spec: {exc}")
+                    return 2
             try:
-                path = write_spec(root, draft_spec(result.machines), force=getattr(args, "force", False))
+                path = write_spec(root, content, force=True)
             except Exception as exc:
                 print(f"meridian spec: {exc}")
                 return 2
@@ -458,12 +468,13 @@ def _setup_cli(subparser) -> None:
     p = subs.add_parser("spec", help="draft / accept / show the .meridian.yaml spec")
     spec_subs = p.add_subparsers(dest="spec_action")
     for name, help_text in (("draft", "print the spec Meridian would accept"),
-                            ("accept", "write .meridian.yaml (needs --force to overwrite)"),
+                            ("accept", "write .meridian.yaml (merged into an existing one; deny rules are kept)"),
                             ("show", "print current spec")):
         sp = spec_subs.add_parser(name, help=help_text)
         add_root(sp)
         if name == "accept":
-            sp.add_argument("--force", action="store_true")
+            sp.add_argument("--force", action="store_true",
+                            help="kept for compatibility: accepting never overwrites reviewed rules")
 
     p = subs.add_parser("ledger", help="evidence ledger: show / verify / stats / repair")
     ledger_subs = p.add_subparsers(dest="ledger_action")
