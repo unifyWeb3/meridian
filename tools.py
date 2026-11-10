@@ -16,13 +16,65 @@ from .analyzer.scan import scan_root
 from .analyzer.spec import SpecError, draft_spec, load_spec, write_spec
 
 
+class RootError(ValueError):
+    """The requested root is outside the tree Meridian may touch."""
+
+
+def _agent_cwd() -> Path:
+    """The active agent working directory - the only tree Meridian may read.
+
+    Uses the plugin's own seam (`agent.runtime_cwd` when Hermes provides it,
+    otherwise the configured terminal cwd, otherwise the process cwd), so the
+    sandbox follows the session and not the model.
+    """
+    try:
+        from . import _session_cwd  # plugin seam: agent.runtime_cwd, else cwd
+
+        return Path(_session_cwd()).resolve()
+    except Exception:
+        pass
+    scoped = (os.environ.get("TERMINAL_CWD") or "").strip()
+    if scoped:
+        candidate = Path(scoped).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+    return Path(os.getcwd()).resolve()
+
+
+def _hermes_home() -> Path:
+    raw = os.environ.get("HERMES_HOME") or ""
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path(os.path.expanduser("~")).resolve() / ".hermes"
+
+
+def _confine_root(root: Path) -> Path:
+    """Pin a root to the active working directory.
+
+    `root` is a model-controlled tool argument, so "the out_file must stay
+    inside root" is not a sandbox on its own: the root itself has to live
+    inside the session's working directory before anything is read or written.
+    """
+    base = _agent_cwd()
+    if not root.is_relative_to(base):
+        raise RootError(
+            f"root must stay inside the working directory {base} - refusing {root}")
+    home = _hermes_home()
+    if base.is_relative_to(home):
+        return root  # the session itself lives under the Hermes home
+    for protected in (home, repo_mod.plugin_data_dir()):
+        if root.is_relative_to(Path(protected).resolve()):
+            raise RootError(f"refusing to work inside the Hermes home {protected}")
+    return root
+
+
 def _tool_root(args: dict) -> Path:
     raw = (args or {}).get("root") or os.environ.get("MERIDIAN_ROOT") or ""
     if raw:
         path = Path(raw).expanduser()
     else:
-        path = Path(os.getcwd())
-    return path.resolve()
+        path = _agent_cwd()
+    return _confine_root(path.resolve())
 
 
 def _err(message: str, **extra: Any) -> str:
@@ -90,6 +142,8 @@ def meridian_scan(args: dict, **kwargs: Any) -> str:
             "machines": [m.id for m in result.machines],
         })
         return _ok({"scan": payload, "hint": "Run meridian_verify for edge-level verdicts, meridian_spec draft to start enforcement, meridian_diagram for a picture."})
+    except RootError as exc:
+        return _err(str(exc))
     except Exception as exc:  # total containment
         return _err(f"scan failed: {exc}")
 
@@ -181,6 +235,8 @@ def meridian_verify(args: dict, **kwargs: Any) -> str:
             "ok": payload["ok"],
         })
         return _ok(payload)
+    except RootError as exc:
+        return _err(str(exc))
     except SpecError as exc:
         return _err(f"spec error: {exc}")
     except Exception as exc:
@@ -279,6 +335,8 @@ def meridian_diagram(args: dict, **kwargs: Any) -> str:
         if fmt == "mermaid":
             return _ok({"format": "mermaid", "machine_id": machine_id, "diagram": _mermaid(machine)})
         return _ok({"format": "xstate", "machine_id": machine_id, "machine": _xstate(machine)})
+    except RootError as exc:
+        return _err(str(exc))
     except Exception as exc:
         return _err(f"diagram failed: {exc}")
 
@@ -321,6 +379,8 @@ def meridian_spec(args: dict, **kwargs: Any) -> str:
         _ledger_event("check", {"root": payload["root"], "spec": payload["spec"],
                                 "violation_count": payload["violation_count"], "ok": payload["ok"]})
         return _ok({"check": payload})
+    except RootError as exc:
+        return _err(str(exc))
     except SpecError as exc:
         return _err(f"spec error: {exc}")
     except Exception as exc:
@@ -435,9 +495,10 @@ def meridian_report(args: dict, **kwargs: Any) -> str:
             if not target.is_absolute():
                 target = root / out
             target = target.resolve()
-            # The caller named this path, but it must stay inside the scanned
-            # repo - Meridian never writes outside it on an agent's behalf.
-            if root != target and root not in target.parents:
+            # The caller named this path, but it must stay inside the confined
+            # root - Meridian never writes outside the session's working tree
+            # on an agent's behalf.
+            if target == root or not target.is_relative_to(root):
                 return _err(f"out_file must resolve inside {root} - refusing to write {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report, encoding="utf-8")
@@ -446,5 +507,7 @@ def meridian_report(args: dict, **kwargs: Any) -> str:
                                  "out": written})
         return _ok({"report_markdown": report, "written": written,
                     "violation_count": payload.get("violation_count", 0)})
+    except RootError as exc:
+        return _err(str(exc))
     except Exception as exc:
         return _err(f"report failed: {exc}")

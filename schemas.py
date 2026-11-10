@@ -4,7 +4,9 @@ _ROOT_PROP = {
     "type": "string",
     "description": (
         "Absolute path of the repository (or subdirectory) to analyze. "
-        "Defaults to the current session working directory when omitted."
+        "Defaults to the current session working directory when omitted. "
+        "Must stay inside the session working directory: Meridian refuses any "
+        "root outside it (and any path under the Hermes home)."
     ),
 }
 
@@ -170,7 +172,7 @@ MERIDIAN_REPORT = {
             "root": _ROOT_PROP,
             "out_file": {
                 "type": "string",
-                "description": "Optional path to write the report to (e.g. '.meridian/report.md'). Nothing is written when omitted.",
+                "description": "Optional path to write the report to (e.g. '.meridian/report.md'). Must resolve inside the scanned root; anything else is refused. Nothing is written when omitted.",
             },
         },
         "required": [],

@@ -483,5 +483,89 @@ class DiagramTests(TempRepoTest):
         self.assertIn("draft --> done", diagram)
 
 
+class RootConfinementTests(TempRepoTest):
+    """`root` is a model-controlled tool argument: it has to be pinned to the
+    active working directory, or "inside root" is not a sandbox at all."""
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.tmp / "project"
+        self.project.mkdir(parents=True, exist_ok=True)
+        (self.project / "o.py").write_text(
+            'class O:\n    def __init__(self):\n        self.status = "draft"\n',
+            encoding="utf-8")
+        import meridian.tools as tools_mod
+
+        self._orig_agent_cwd = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.project
+        self.addCleanup(setattr, tools_mod, "_agent_cwd", self._orig_agent_cwd)
+
+    def call(self, tool, **args):
+        import meridian.tools as tools_mod
+
+        return json.loads(getattr(tools_mod, tool)(args))
+
+    def test_home_root_is_refused(self):
+        out = self.call("meridian_scan", root="~")
+        self.assertFalse(out["ok"])
+        self.assertIn("working directory", out["error"])
+
+    def test_filesystem_root_is_refused(self):
+        out = self.call("meridian_scan", root="/")
+        self.assertFalse(out["ok"])
+        self.assertIn("working directory", out["error"])
+
+    def test_parent_traversal_root_is_refused(self):
+        out = self.call("meridian_scan", root=os.path.join(str(self.project), "..", ".."))
+        self.assertFalse(out["ok"])
+        self.assertIn("working directory", out["error"])
+
+    def test_symlink_that_escapes_the_working_dir_is_refused(self):
+        escape = self.tmp / "outside"
+        escape.mkdir(parents=True, exist_ok=True)
+        link = self.project / "link-out"
+        link.symlink_to(escape, target_is_directory=True)
+        out = self.call("meridian_scan", root=str(link))
+        self.assertFalse(out["ok"])
+        self.assertIn("working directory", out["error"])
+
+    def test_hermes_home_root_is_refused(self):
+        # inside the working directory on purpose: only the Hermes-home rule
+        # can catch this one.
+        home = self.project / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        os.environ["HERMES_HOME"] = str(home)
+        out = self.call("meridian_scan", root=str(home))
+        self.assertFalse(out["ok"])
+        self.assertIn("Hermes home", out["error"])
+
+    def test_in_project_root_still_works(self):
+        out = self.call("meridian_scan", root=str(self.project))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["scan"]["root"], str(self.project.resolve()))
+        sub = self.project / "sub"
+        sub.mkdir()
+        out = self.call("meridian_scan", root=str(sub))
+        self.assertTrue(out["ok"], out)
+
+    def test_out_file_traversal_is_refused(self):
+        out = self.call("meridian_report", root=str(self.project),
+                        out_file="../escaped.md")
+        self.assertFalse(out["ok"])
+        self.assertIn("out_file", out["error"])
+        self.assertFalse((self.tmp / "escaped.md").exists())
+
+    def test_out_file_inside_root_is_written(self):
+        out = self.call("meridian_report", root=str(self.project),
+                        out_file=".meridian/report.md")
+        self.assertTrue(out["ok"], out)
+        self.assertTrue((self.project / ".meridian" / "report.md").is_file())
+
+    def test_spec_accept_cannot_write_outside_the_working_dir(self):
+        out = self.call("meridian_spec", root=os.path.expanduser("~"), action="accept")
+        self.assertFalse(out["ok"])
+        self.assertFalse((Path(os.path.expanduser("~")) / ".meridian.yaml").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
