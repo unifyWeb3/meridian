@@ -7,18 +7,20 @@ two-line fix that takes the check to exit 0 - followed by the ledger and the
 repo link.
 
 It is a generated video, built with HyperFrames (HTML rendered to frames), not
-a screen recording. The terminal lines on screen were the plugin's real output
-when the clip was rendered (v1.0.2); the check line has since changed with the
-status vocabulary, and the clip has not been re-rendered. `docs/smoke-output.txt`
-holds the current real output.
+a screen recording. The clip is re-rendered from the current source: the
+terminal lines on screen are the plugin's real output, including the
+`healthy`/`spec-clean` status vocabulary and the real ledger head.
+`docs/smoke-output.txt` holds a full end-to-end CLI run.
 
 **How it was made**
 
 - Script and story beats: `SPEC.md` (this directory has only the how-to; the
   HyperFrames project lives outside this repo to keep the plugin small)
-- Voice: en-US-AndrewNeural (edge TTS), lines generated to `assets/`
+- Voice: en-US-AndrewNeural (edge TTS), lines generated to `assets/` from the
+  captions themselves, so the caption text is the voice script
 - Composition: 1920x1080, 10 scenes, captions timed to the VO cues, quiet
-  ambient bed and two SFX hits, `window.__timelines` seeks a paused GSAP timeline
+  ambient bed (72s, crossfaded loop, 3s fade-out) and two SFX hits,
+  `window.__timelines` seeks a paused GSAP timeline
 - Render: `npx hyperframes render --quality delivery` (headless Chrome + ffmpeg)
 
 **Reproduce**
