@@ -1,19 +1,23 @@
-# Meridian - 90-second demo video
+# Meridian - 72-second demo video
 
-`meridian-demo.mp4` (66s, 1920x1080 @ 30fps) ships the full story: the bug in
-`examples/demo-order-pipeline/orders.py`, the scan, the failed check with both
-anchored findings, the half-fix that stays red, and the two-line fix that turns
-it green - followed by the ledger and the repo link.
+`meridian-demo.mp4` (72.0s, 1920x1080 @ 30fps, 2160 frames) ships the full
+story: the bug in `examples/demo-order-pipeline/orders.py`, the scan, the failed
+check with both anchored findings, the half-fix that stays red, and the
+two-line fix that takes the check to exit 0 - followed by the ledger and the
+repo link.
 
 It is a generated video, built with HyperFrames (HTML rendered to frames), not
-a screen recording. Every terminal line on screen is the plugin's real output.
+a screen recording. The terminal lines on screen were the plugin's real output
+when the clip was rendered (v1.0.2); the check line has since changed with the
+status vocabulary, and the clip has not been re-rendered. `docs/smoke-output.txt`
+holds the current real output.
 
 **How it was made**
 
 - Script and story beats: `SPEC.md` (this directory has only the how-to; the
   HyperFrames project lives outside this repo to keep the plugin small)
 - Voice: en-US-AndrewNeural (edge TTS), lines generated to `assets/`
-- Composition: 1920x1080, 8 scenes, captions timed to the VO cues, quiet
+- Composition: 1920x1080, 10 scenes, captions timed to the VO cues, quiet
   ambient bed and two SFX hits, `window.__timelines` seeks a paused GSAP timeline
 - Render: `npx hyperframes render --quality delivery` (headless Chrome + ffmpeg)
 

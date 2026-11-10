@@ -110,7 +110,7 @@ nothing to enforce, which is correct behavior, not a bug.
 
 ```bash
 cd /path/to/your/project        # a project directory, not $HOME
-hermes plugins install unifyWeb3/meridian --enable   # or from the catalog
+hermes plugins install unifyWeb3/meridian --enable   # from GitHub; the catalog submission is still open
 hermes meridian scan
 hermes meridian check --strict        # exit 1 on violations; wire into CI
 hermes meridian report --out .meridian/report.md
@@ -176,7 +176,7 @@ fails a build: the gate is `check`.
 ## Develop and test
 
 ```bash
-python3 -m unittest discover -s tests -v   # 28 checks, stdlib only
+python3 -m unittest discover -s tests -v   # 74 checks, stdlib only
 ```
 
 Plugin layout: `plugin.yaml` + `__init__.py` + `analyzer/` (scan, verify,
