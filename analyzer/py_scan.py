@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 from .model import Machine, Transition
-from .repo import relpath
+from . import repo as repo_mod
 
 _STATE_TOKEN = re.compile(
     r"(?:^|_)(status|state|phase|stage|step|disposition|lifecycle|mode|workflow|fulfillment)(?:_|$)",
@@ -44,18 +44,24 @@ def _literal_str(node: ast.AST | None) -> str | None:
 def _iter_files(py_files: list[Path], root: Path) -> dict[str, ast.Module | None]:
     parsed: dict[str, ast.Module | None] = {}
     for path in py_files:
-        rel = relpath(path, root)
+        rel = repo_mod.relpath(path, root)
         try:
-            source = path.read_text(encoding="utf-8", errors="replace")
+            source = repo_mod.read_text(path, errors="replace")
             parsed[rel] = ast.parse(source, filename=rel)
         except Exception:  # syntax errors are data, not crashes
             parsed[rel] = None
     return parsed
 
 
-def _enum_table(parsed: dict[str, ast.Module | None]) -> dict[str, dict[str, str]]:
-    """enum_class_name -> {MEMBER: value} for str-like enums."""
-    table: dict[str, dict[str, str]] = {}
+def _enum_table(parsed: dict[str, ast.Module | None]) -> tuple[dict[str, dict[str, str]], set[str]]:
+    """Return unique enum definitions and names that are ambiguous.
+
+    Python modules commonly reuse a class name such as ``Status``. A global
+    last-one-wins table would resolve a write to the wrong alphabet and
+    fabricate a transition. Identical definitions are safe to share;
+    conflicting definitions are withheld and reported by the caller.
+    """
+    definitions: dict[str, list[dict[str, str]]] = {}
     for tree in parsed.values():
         if tree is None:
             continue
@@ -82,8 +88,17 @@ def _enum_table(parsed: dict[str, ast.Module | None]) -> dict[str, dict[str, str
                 if isinstance(target, ast.Name):
                     members[target.id] = value if value is not None else target.id.lower()
             if members:
-                table[node.name] = members
-    return table
+                definitions.setdefault(node.name, []).append(members)
+
+    table: dict[str, dict[str, str]] = {}
+    ambiguous: set[str] = set()
+    for name, variants in definitions.items():
+        first = variants[0]
+        if all(variant == first for variant in variants[1:]):
+            table[name] = first
+        else:
+            ambiguous.add(name)
+    return table, ambiguous
 
 
 def _constant_table(parsed: dict[str, ast.Module | None]) -> tuple[dict[str, str], list[str]]:
@@ -211,9 +226,13 @@ def _compare_frame(
 
 def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[str]]:
     parsed = _iter_files(py_files, root)
-    enums = _enum_table(parsed)
+    enums, ambiguous_enums = _enum_table(parsed)
     constants, dropped_constants = _constant_table(parsed)
     warnings: list[str] = []
+    for name in sorted(ambiguous_enums):
+        warnings.append(
+            f"enum {name} has conflicting definitions in multiple modules - "
+            "its members were not used to resolve writes")
     for name in dropped_constants:
         warnings.append(f"constant {name} defined with different values in multiple modules - not used to resolve writes")
     machines: dict[str, Machine] = {}
@@ -329,7 +348,7 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
 
         def visit_expr(expr: ast.AST, frames) -> None:
             if isinstance(expr, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                return  # nested scopes fold into the parent, as documented
+                return  # nested scopes are disclosed, not analyzed
             if isinstance(expr, ast.IfExp):
                 hits: list[str] = []
                 frame = _compare_frame(expr.test, enums, constants, hits)
@@ -379,7 +398,7 @@ def scan_python(py_files: list[Path], root: Path) -> tuple[list[Machine], list[s
                 visit_expr(stmt.value, frames)
                 return
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                return  # nested scopes fold into the parent
+                return  # nested scopes are disclosed, not analyzed
             for child in ast.iter_child_nodes(stmt):
                 if isinstance(child, ast.stmt):
                     visit_stmt(child, frames)

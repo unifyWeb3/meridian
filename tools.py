@@ -13,7 +13,7 @@ from typing import Any
 from .analyzer import graph, ledger, repo as repo_mod
 from .analyzer.model import cap_list, dumps
 from .analyzer.scan import scan_root
-from .analyzer.spec import SpecError, draft_spec, load_spec, merge_spec, write_spec
+from .analyzer.spec import SpecError, accept_spec, draft_spec, load_spec
 
 
 class RootError(ValueError):
@@ -55,7 +55,8 @@ def _guard_cwd(base: Path) -> None:
     the home directory or at the filesystem root it would allow exactly what
     it is meant to prevent.
     """
-    if base == Path("/") or base == Path.home().resolve():
+    home = Path.home().resolve()
+    if base == Path("/") or home.is_relative_to(base):
         raise RootError(
             f"the working directory {base} is too broad to confine Meridian - "
             "run it from a project directory")
@@ -184,8 +185,8 @@ def meridian_scan(args: dict, **kwargs: Any) -> str:
 
 
 # -------------------------------------------------------------- verify
-def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
-                allow_uncovered: bool = False) -> dict:
+def _verify_all_with_result(root: Path, *, machine_id: str | None, strict: bool,
+                            allow_uncovered: bool = False) -> tuple[dict, Any]:
     result = scan_root(root)
     spec_path = repo_mod.find_spec(root)
     spec = load_spec(spec_path) if spec_path else None
@@ -194,7 +195,7 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
         machines = [m for m in machines if m.id == machine_id]
         if not machines:
             return {"error": f"machine not found: {machine_id}",
-                    "known": [m.id for m in result.machines][:30]}
+                    "known": [m.id for m in result.machines][:30]}, result
 
     def _enum_only(m) -> bool:
         return not m.transitions and not m.initial and m.id.startswith("enum:")
@@ -257,7 +258,7 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
         status = "spec-clean"
     else:
         status = "healthy"
-    return {
+    payload = {
         "root": result.root,
         "spec": str(spec_path) if spec_path else None,
         "spec_version": spec.version if spec else None,
@@ -283,6 +284,17 @@ def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
         "files_scanned": result.files_scanned,
         "elapsed_ms": result.elapsed_ms,
     }
+    return payload, result
+
+
+def _verify_all(root: Path, *, machine_id: str | None, strict: bool,
+                allow_uncovered: bool = False) -> dict:
+    """Compatibility wrapper for callers that only need the JSON payload."""
+    payload, _ = _verify_all_with_result(
+        root, machine_id=machine_id, strict=strict,
+        allow_uncovered=allow_uncovered,
+    )
+    return payload
 
 
 def meridian_verify(args: dict, **kwargs: Any) -> str:
@@ -424,15 +436,8 @@ def meridian_spec(args: dict, **kwargs: Any) -> str:
                             "note": "Review every edge, then 'accept' to enforce."})
             # Accepting is not a rewrite: an accepted spec is merged into, so
             # every deny rule and authored edge the reviewer approved survives.
-            merged = False
-            existing_path = root / ".meridian.yaml"
-            if not existing_path.is_file():
-                existing_path = repo_mod.find_spec(root)
-            if existing_path is not None and existing_path.is_file():
-                content = merge_spec(load_spec(existing_path), result.machines)
-                merged = True
             try:
-                path = write_spec(root, content, force=True)
+                path, merged = accept_spec(root, result.machines)
             except SpecError as exc:
                 return _err(str(exc))
             _ledger_event("spec_accept", {"root": str(root), "path": str(path),
@@ -445,7 +450,11 @@ def meridian_spec(args: dict, **kwargs: Any) -> str:
         if action == "show":
             if not spec_path:
                 return _err(f"no .meridian.yaml found at or above {root}")
-            return _ok({"path": str(spec_path), "content": spec_path.read_text(encoding="utf-8")})
+            try:
+                content = repo_mod.read_text(spec_path)
+            except repo_mod.UnsafePathError as exc:
+                raise SpecError(str(exc)) from exc
+            return _ok({"path": str(spec_path), "content": content})
         # check
         if not spec_path:
             return _err(f"no .meridian.yaml at or above {root}", hint="run action=draft first")
@@ -484,7 +493,7 @@ def meridian_ledger(args: dict, **kwargs: Any) -> str:
 
 
 # -------------------------------------------------------------- report
-def _report_markdown(root: Path, payload: dict) -> str:
+def _report_markdown(root: Path, payload: dict, machines: list[Any] | None = None) -> str:
     lines = [
         "# Meridian Report",
         "",
@@ -508,9 +517,12 @@ def _report_markdown(root: Path, payload: dict) -> str:
             f"| {', '.join(verdict.get('dead', [])) or '-'} "
             f"| {len(verdict.get('violations', []))} |"
         )
-    # One diagram up front: the first machine that has real evidence.
-    diagram_machine = next(
-        (m for m in scan_root(root).machines if m.transitions), None)
+    # One diagram up front: the first machine that has real evidence. The
+    # caller normally supplies the scan result so report generation does not
+    # walk and parse the repository a second time.
+    if machines is None:
+        machines = scan_root(root).machines
+    diagram_machine = next((m for m in machines if m.transitions), None)
 
     for verdict in payload.get("verdicts", []):
         lines += ["", f"## `{verdict['machine_id']}`", ""]
@@ -528,6 +540,9 @@ def _report_markdown(root: Path, payload: dict) -> str:
             src = t["src"] if t["src"] else "*"
             guard = "guarded" if t["guarded"] else "UNGUARDED"
             lines.append(f"- `{src}` → `{t['dst']}` via `{t['via']}()` - {t['file']}:{t['line']} ({guard})")
+        if verdict.get("transitions_truncated"):
+            lines.append(
+                f"- _{verdict['transitions_truncated']} additional transition(s) omitted from this report._")
         if verdict.get("violations"):
             lines += ["", "**Violations:**", ""]
             for v in verdict["violations"]:
@@ -562,24 +577,24 @@ def meridian_report(args: dict, **kwargs: Any) -> str:
         args = args or {}
         root = _tool_root(args)
         strict = bool(args.get("strict", False))
-        payload = _verify_all(root, machine_id=None, strict=strict)
+        payload, scan_result = _verify_all_with_result(
+            root, machine_id=None, strict=strict)
         if "error" in payload:
             return _err(payload["error"])
-        report = _report_markdown(root, payload)
+        report = _report_markdown(root, payload, scan_result.machines)
         out = args.get("out_file")
         written = None
         if out:
-            target = Path(out).expanduser()
-            if not target.is_absolute():
-                target = root / out
-            target = target.resolve()
-            # The caller named this path, but it must stay inside the confined
-            # root - Meridian never writes outside the session's working tree
-            # on an agent's behalf.
-            if target == root or not target.is_relative_to(root):
-                return _err(f"out_file must resolve inside {root} - refusing to write {target}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(report, encoding="utf-8")
+            try:
+                # Resolve parent components, but inspect the final component
+                # without following it. Resolving the whole path would turn a
+                # repository symlink into its target and overwrite that file.
+                target = repo_mod.confined_output_path(root, out)
+                repo_mod.atomic_write_text(target, report)
+            except repo_mod.UnsafePathError as exc:
+                return _err(f"out_file is unsafe: {exc}")
+            except OSError as exc:
+                return _err(f"out_file cannot be written: {exc}")
             written = str(target)
         _ledger_event("report", {"root": str(root), "machines": len(payload.get("verdicts", [])),
                                  "out": written})

@@ -8,12 +8,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
 from . import schemas, tools
 from .analyzer import ledger, repo as repo_mod
-from .analyzer.scan import scan_root
+from .analyzer.scan import scan_files, scan_root
 from .analyzer import graph
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ _WRITE_HINTS = ("write", "patch", "editor", "edit", "replace", "create")
 _MAX_RESCAN_FILES = 400
 _NOTE_TTL_SECONDS = 1200
 _PENDING_NOTES: dict[str, list[tuple[float, str]]] = {}
+_PENDING_NOTES_LOCK = threading.Lock()
 
 # replaced during register() from ctx.get_config(...)
 _AUTO_VERIFY = True
@@ -48,9 +50,12 @@ def _changed_files(args: dict) -> list[Path]:
 
     collect(args)
     try:
-        base = _session_cwd()
+        base = _session_cwd().resolve()
+        # The hook is advisory, so a broad or unavailable session cwd simply
+        # disables observation rather than making the agent tool fail.
+        tools._guard_cwd(base)
     except Exception:
-        base = Path(os.getcwd())
+        return found
     for raw in candidates:
         raw = raw.strip()
         if not raw or len(raw) > 4096:
@@ -58,13 +63,23 @@ def _changed_files(args: dict) -> list[Path]:
         if not raw.lower().endswith(_SUPPORTED_SUFFIXES):
             continue
         path = Path(raw).expanduser()
-        if not path.is_absolute():
+        absolute = path.is_absolute()
+        if not absolute:
             path = base / path
-        if path.is_file():
-            try:
-                found.append(path.resolve())
-            except OSError:
+        try:
+            if path.is_symlink():
                 continue
+            resolved = path.resolve()
+            # Relative paths are session-relative. Absolute paths are allowed
+            # because the host's write tool may intentionally edit another
+            # governed repository; the repo-root guard below still refuses
+            # broad/system locations.
+            if not absolute and resolved != base and not resolved.is_relative_to(base):
+                continue
+            if resolved.is_file():
+                found.append(resolved)
+        except OSError:
+            continue
     # de-dupe, keep order
     seen: set[str] = set()
     unique: list[Path] = []
@@ -89,14 +104,15 @@ def _session_cwd() -> Path:
 
 
 def _store_note(key: str, text: str) -> None:
-    bucket = _PENDING_NOTES.setdefault(key, [])
-    bucket.append((time.time(), text))
-    del bucket[:-3]
-    now = time.time()
-    stale = [k for k, v in _PENDING_NOTES.items()
-             if all(now - ts >= _NOTE_TTL_SECONDS for ts, _ in v)]
-    for k in stale:
-        del _PENDING_NOTES[k]
+    with _PENDING_NOTES_LOCK:
+        bucket = _PENDING_NOTES.setdefault(key, [])
+        bucket.append((time.time(), text))
+        del bucket[:-3]
+        now = time.time()
+        stale = [k for k, v in _PENDING_NOTES.items()
+                 if all(now - ts >= _NOTE_TTL_SECONDS for ts, _ in v)]
+        for k in stale:
+            del _PENDING_NOTES[k]
 
 
 def _session_key(session_id=None, task_id=None) -> str:
@@ -114,7 +130,60 @@ def _take_notes(key: str) -> list[str]:
     # Session-keyed only: the bucket is popped for the session that owns it.
     # There is no shared "local" fallback - that one leaked notes from one
     # chat into the next turn of any other chat in the same profile.
-    return [t for _, t in _PENDING_NOTES.pop(key, [])]
+    with _PENDING_NOTES_LOCK:
+        return [t for _, t in _PENDING_NOTES.pop(key, [])]
+
+
+def _auto_verify_root(root: Path, spec_path: Path, changed_files: list[Path]) -> list[str]:
+    """Verify one repository once and return human-readable findings."""
+    try:
+        tools._guard_cwd(root)
+    except Exception:
+        return []
+    # Walk once, with a hard bound, then analyze that exact file list. The
+    # previous implementation walked the whole tree and scan_root walked it
+    # again, which made large repositories pay twice for every edit.
+    probe, skipped = repo_mod.walk_source_files(
+        root, max_files=_MAX_RESCAN_FILES + 1)
+    if len(probe) > _MAX_RESCAN_FILES:
+        return [f"meridian: {root.name} has more than {_MAX_RESCAN_FILES} "
+                f"source files; auto-verify skipped - run meridian_verify manually"]
+
+    result_scan = scan_files(probe, root, skipped=skipped)
+    machine_files = {
+        (root / source).resolve()
+        for machine in result_scan.machines
+        for source in machine.sources
+    }
+    if not any(changed in machine_files for changed in changed_files):
+        return []  # the edit did not touch a tracked machine's files
+
+    spec = load_spec_safe(spec_path)
+    notes: list[str] = []
+    violation_count = 0
+    for machine in result_scan.machines:
+        spec_machine = spec.machine(machine.id)
+        if spec_machine is None:
+            continue
+        verdict = graph.analyze_machine(machine, spec_machine, strict=_STRICT)
+        if not verdict.violations:
+            continue
+        violation_count += len(verdict.violations)
+        for violation in verdict.violations[:5]:
+            notes.append(
+                f"meridian: {violation.file}:{violation.line} - "
+                f"{violation.src} -> {violation.dst} via {violation.via}() "
+                f"violates {machine.id} ({violation.detail})")
+
+    try:
+        ledger.append("auto_reverify", {
+            "root": str(root),
+            "files": [str(path.relative_to(root)) for path in changed_files],
+            "violations": violation_count,
+        })
+    except Exception:
+        pass
+    return notes
 
 
 def _on_post_tool_call(tool_name, args, result, task_id=None, session_id=None, **kwargs):
@@ -132,50 +201,36 @@ def _on_post_tool_call(tool_name, args, result, task_id=None, session_id=None, *
         changed = _changed_files(args or {})
         if not changed:
             return None
-        notes_for_key: list[str] = []
+        try:
+            base = _session_cwd().resolve()
+            tools._guard_cwd(base)
+        except Exception:
+            return None
+
+        # Group edits by the repository that owns their spec. The previous
+        # implementation rescanned the same repository once per changed file
+        # and could report the same violation several times.
+        groups: dict[Path, tuple[Path, list[Path]]] = {}
         for changed_file in changed:
             spec_path = repo_mod.find_spec(changed_file.parent)
             if spec_path is None:
                 continue
             root = spec_path.parent.resolve()
+            current = groups.get(root)
+            if current is None:
+                groups[root] = (spec_path, [changed_file])
+            else:
+                current[1].append(changed_file)
+
+        notes_for_key: list[str] = []
+        for root, (spec_path, changed_files) in groups.items():
             try:
-                probe, _ = repo_mod.walk_source_files(root)
-                if len(probe) > _MAX_RESCAN_FILES:
-                    notes_for_key.append(
-                        f"meridian: {root.name} has {len(probe)} source files; "
-                        f"auto-verify skipped - run meridian_verify manually")
-                    continue
-                result_scan = scan_root(root, max_files=_MAX_RESCAN_FILES)
+                notes_for_key.extend(_auto_verify_root(root, spec_path, changed_files))
             except Exception:
                 continue
-            machine_files = {(root / s).resolve() for machine in result_scan.machines for s in machine.sources}
-            if changed_file not in machine_files:
-                continue  # the edit didn't touch a tracked machine's files
-            try:
-                spec = load_spec_safe(spec_path)
-            except Exception:
-                continue
-            for machine in result_scan.machines:
-                spec_machine = spec.machine(machine.id) if spec else None
-                if spec_machine is None:
-                    continue
-                verdict = graph.analyze_machine(machine, spec_machine, strict=_STRICT)
-                if verdict.violations:
-                    for v in verdict.violations[:5]:
-                        notes_for_key.append(
-                            f"meridian: {v.file}:{v.line} - {v.src} -> {v.dst} via {v.via}() "
-                            f"violates {machine.id} ({v.detail})")
-            try:
-                ledger.append("auto_reverify", {
-                    "root": str(root),
-                    "file": str(changed_file.relative_to(root)),
-                    "violations": sum(1 for n in notes_for_key if "violates" in n),
-                })
-            except Exception:
-                pass
         if notes_for_key:
             text = ("Meridian - this edit touched state-machine code:\n"
-                    + "\n".join(f"  - {n}" for n in notes_for_key[:8])
+                    + "\n".join(f"  - {note}" for note in notes_for_key[:8])
                     + "\nRun meridian_verify for full details.")
             # Stored under the session id - the same key pre_llm_call reads,
             # so the finding surfaces on the next turn of THIS session.
@@ -342,20 +397,23 @@ def _cli_dispatch(args):
             pass
         return 0
     if cmd == "report":
-        payload = tools._verify_all(root, machine_id=None,
-                                    strict=getattr(args, "strict", False) or _STRICT)
-        report = tools._report_markdown(root, payload)
+        payload, scan_result = tools._verify_all_with_result(
+            root, machine_id=None,
+            strict=getattr(args, "strict", False) or _STRICT)
+        report = tools._report_markdown(root, payload, scan_result.machines)
         out = getattr(args, "out", None)
         if out:
-            target = Path(out).expanduser()
-            if not target.is_absolute():
-                target = root / out
-            target = target.resolve()
-            if target != root and root not in target.parents:
-                print(f"meridian report: refusing to write outside {root}: {target}")
+            try:
+                # Keep the final component un-resolved so a symlinked report
+                # destination is refused rather than followed to its target.
+                target = repo_mod.confined_output_path(root, out)
+                repo_mod.atomic_write_text(target, report)
+            except repo_mod.UnsafePathError as exc:
+                print(f"meridian report: refusing unsafe output path: {exc}")
                 return 2
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(report, encoding="utf-8")
+            except OSError as exc:
+                print(f"meridian report: cannot write output path: {exc}")
+                return 2
             print(f"wrote {target}")
         else:
             print(report)
@@ -383,20 +441,13 @@ def _cli_dispatch(args):
             return
         if action == "accept":
             result = scan_root(root)
-            from .analyzer.spec import draft_spec, merge_spec, write_spec
+            from .analyzer.spec import accept_spec
 
             # Accepting merges into an accepted spec: deny rules and authored
-            # edges are never overwritten by a fresh scan.
-            content = draft_spec(result.machines)
-            existing = root / ".meridian.yaml"
-            if existing.is_file():
-                try:
-                    content = merge_spec(load_spec_safe(existing), result.machines)
-                except Exception as exc:
-                    print(f"meridian spec: {exc}")
-                    return 2
+            # edges are never overwritten by a fresh scan. The tool and CLI
+            # paths use the same guarded writer.
             try:
-                path = write_spec(root, content, force=True)
+                path, _ = accept_spec(root, result.machines, search_parents=False)
             except Exception as exc:
                 print(f"meridian spec: {exc}")
                 return 2
@@ -407,7 +458,11 @@ def _cli_dispatch(args):
             if not spec:
                 print(f"no .meridian.yaml at or above {root}")
                 return 2
-            print(spec.read_text(encoding="utf-8"))
+            try:
+                print(repo_mod.read_text(spec))
+            except repo_mod.UnsafePathError as exc:
+                print(f"meridian spec: {exc}")
+                return 2
             return
     if cmd == "ledger":
         action = args.ledger_action

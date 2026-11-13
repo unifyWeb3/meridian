@@ -40,10 +40,7 @@ def _merge(machines: list[Machine]) -> list[Machine]:
     return list(merged.values())
 
 
-def scan_root(root_path: str | Path, *, max_files: int | None = DEFAULT_MAX_FILES) -> ScanResult:
-    started = time.monotonic()
-    root = Path(root_path).expanduser()
-    files, skipped = walk_source_files(root, max_files=max_files)
+def _analyze_files(files: list[Path], root: Path, skipped: list[str], started: float) -> ScanResult:
     py_files = [f for f in files if f.suffix.lower() == ".py"]
     other_files = [f for f in files if f.suffix.lower() != ".py"]
 
@@ -68,3 +65,18 @@ def scan_root(root_path: str | Path, *, max_files: int | None = DEFAULT_MAX_FILE
         warnings=warnings[:50],
         elapsed_ms=elapsed,
     )
+
+
+def scan_files(files: list[Path], root: str | Path, *,
+               skipped: list[str] | None = None) -> ScanResult:
+    """Analyze an already-walked file list without walking the tree again."""
+    started = time.monotonic()
+    return _analyze_files(list(files), Path(root).expanduser(),
+                          list(skipped or []), started)
+
+
+def scan_root(root_path: str | Path, *, max_files: int | None = DEFAULT_MAX_FILES) -> ScanResult:
+    started = time.monotonic()
+    root = Path(root_path).expanduser()
+    files, skipped = walk_source_files(root, max_files=max_files)
+    return _analyze_files(files, root, skipped, started)

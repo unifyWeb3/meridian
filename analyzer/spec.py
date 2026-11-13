@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import repo as repo_mod
+
 
 class SpecError(ValueError):
     pass
@@ -190,11 +192,9 @@ def _coerce_spec(data: Any, path: Path) -> Spec:
     have."""
     if not isinstance(data, dict):
         raise SpecError("spec must be a mapping with 'version' and 'machines'")
-    try:
-        version = data.get("version", 1)
-        version = version if isinstance(version, int) and not isinstance(version, bool) else int(version)
-    except (TypeError, ValueError) as exc:
-        raise SpecError(f"version must be an integer: {exc}") from exc
+    version = data.get("version", 1)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise SpecError(f"version must be an integer, got {version!r}")
 
     machines_raw = data.get("machines", [])
     if machines_raw is None:
@@ -213,10 +213,10 @@ def _coerce_spec(data: Any, path: Path) -> Spec:
             return []
         out = []
         for i, item in enumerate(value):
-            if isinstance(item, bool) or not isinstance(item, (str, int)):
+            if isinstance(item, bool) or not isinstance(item, str):
                 errors.append(f"{field_name}[{i}] must be a string, got {item!r}")
             else:
-                out.append(str(item))
+                out.append(item)
         return out
 
     def _edges(value: Any, field_name: str, machine_id: str) -> set[tuple[str, str]]:
@@ -267,7 +267,9 @@ def _coerce_spec(data: Any, path: Path) -> Spec:
 
 def load_spec(path: Path) -> Spec:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = repo_mod.read_text(path)
+    except repo_mod.UnsafePathError as exc:
+        raise SpecError(f"unsafe spec path {path}: {exc}") from exc
     except OSError as exc:
         raise SpecError(f"cannot read {path}: {exc}") from exc
     # 1) JSON (valid YAML 1.2)
@@ -409,11 +411,54 @@ def merge_spec(existing: Spec, machines: list[Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def accept_spec(root: Path, machines: list[Any], *, force: bool = True,
+                search_parents: bool = True) -> tuple[Path, bool]:
+    """Draft, merge and write the accepted spec for a repository.
+
+    The tool and CLI paths share this operation so their merge and safety
+    semantics cannot drift. The returned boolean says whether an existing
+    spec was merged rather than a fresh spec being written.
+    """
+    root = root.resolve()
+    existing_path = root / ".meridian.yaml"
+    if not existing_path.is_file() and search_parents:
+        existing_path = repo_mod.find_spec(root)
+    merged = False
+    content = draft_spec(machines)
+    if existing_path is not None and existing_path.is_file():
+        content = merge_spec(load_spec(existing_path), machines)
+        merged = True
+    return write_spec(root, content, force=force), merged
+
+
 def write_spec(root: Path, content: str, *, force: bool = False) -> Path:
+    """Write a spec atomically without following repository-chosen symlinks.
+
+    Both the live spec and its backup are checked before either is touched.
+    The backup preserves the reviewed file, while the live file is replaced
+    through a same-directory temporary file; neither operation follows a
+    symlink or writes through a hard link.
+    """
+    root = root.resolve()
     target = root / ".meridian.yaml"
-    if target.exists() and not force:
+    backup = root / ".meridian.yaml.bak"
+    try:
+        target_info = repo_mod.inspect_regular_file(target, allow_missing=True)
+        # Check the backup even when no live spec exists. A malicious backup
+        # must never become the object of a later write-through.
+        repo_mod.inspect_regular_file(backup, allow_missing=True)
+    except repo_mod.UnsafePathError as exc:
+        raise SpecError(str(exc)) from exc
+
+    if target_info is not None and not force:
         raise SpecError(f"{target} exists - pass force=True to overwrite (a .bak is kept)")
-    if target.exists():
-        target.with_suffix(".yaml.bak").write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
-    target.write_text(content, encoding="utf-8")
+    try:
+        if target_info is not None:
+            original = repo_mod.read_text(target)
+            repo_mod.atomic_write_text(backup, original)
+        repo_mod.atomic_write_text(target, content)
+    except repo_mod.UnsafePathError as exc:
+        raise SpecError(str(exc)) from exc
+    except OSError as exc:
+        raise SpecError(f"cannot write {target}: {exc}") from exc
     return target

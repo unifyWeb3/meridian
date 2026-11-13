@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.4
+
+### Security
+
+- Spec acceptance no longer follows repository-controlled symlinks. The live
+  `.meridian.yaml` and its `.bak` are checked without following links, and
+  both are replaced atomically so a symlink or hard link is never written
+  through. Spec reads, tool and CLI reports, source scanning and the ledger
+  reject symlink targets; the ledger also rejects hard links.
+
+### Correctness and reliability
+
+- The ledger now serializes stable reads, rejects malformed JSON objects,
+  ties verification caching to the exact file snapshot that was checked,
+  fails loudly when no lock primitive is available, and restores a private
+  `0600` mode after repair. Conflicting Python enum definitions are no
+  longer resolved by last-one-wins.
+
+### Performance and maintainability
+
+- Reports reuse the verification scan instead of scanning the repository a
+  second time; the advisory hook groups edits by repository, performs one
+  bounded walk and analysis per repository, and protects shared note state
+  with a lock. Tool and CLI spec acceptance now share one merge/write path.
+
+### Tests
+
+- 95 stdlib unit tests, `hermes plugins doctor . --ci` and
+  `hermes plugins validate . --install-deps` green.
+
 ## 1.0.3
 
 Review fixes (the maintainer's changes-requested review, plus the hardening

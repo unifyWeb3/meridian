@@ -88,7 +88,7 @@ A prompt cannot do any of this mechanically:
 | You need                                        | Prompt/skill | Meridian |
 | ----------------------------------------------- | ------------ | -------- |
 | Deterministic failure on a forbidden edge       | no           | `check` exits 1, in CI |
-| Evidence you can audit later                    | no           | SHA-256 hash-chained log of check events (counts and machine ids) |
+| Evidence you can audit later                    | no           | SHA-256 hash-chained log of check events (counts, machine ids and paths) |
 | Re-verification after every agent edit          | no           | advisory `post_tool_call` hook (never blocks) |
 | Zero tokens, zero network, zero model required  | n/a          | stdlib only, installs nothing |
 
@@ -167,16 +167,17 @@ fails a build: the gate is `check`.
   entry at all, or an entry that states no rule (non-enum machines; enum-only
   machines carry no edges and are exempt). Waive with `--allow-uncovered`.
 - The ledger is an append-only log of the events Meridian ran: event names,
-  machine ids and aggregate counts (files scanned, violations found). It
-  stores no verdicts, no file:line anchors, no spec or source revisions and
-  no file contents. Its chain is **unkeyed SHA-256**, so it detects edits to
-  the log, but anyone with write access to the ledger file can recompute the
-  chain. Tamper-evident, not tamper-proof.
+  machine ids, aggregate counts (files scanned, violations found) and the
+  repository/spec/report paths involved. It stores no verdicts, no file:line
+  anchors, no spec or source revisions and no file contents. Its chain is
+  **unkeyed SHA-256**, so it detects edits to the log, but anyone with write
+  access to the ledger file can recompute the chain. Tamper-evident, not
+  tamper-proof.
 
 ## Develop and test
 
 ```bash
-python3 -m unittest discover -s tests -v   # 74 checks, stdlib only
+python3 -m unittest discover -s tests -v   # 95 checks, stdlib only
 ```
 
 Plugin layout: `plugin.yaml` + `__init__.py` + `analyzer/` (scan, verify,

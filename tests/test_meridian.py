@@ -1126,5 +1126,311 @@ class StatusWordingTests(TempRepoTest):
         self.assertNotIn(out["check"]["status"], ("healthy", "spec-clean"))
 
 
+class PathSafetyTests(TempRepoTest):
+    """Repository paths are data, not trusted destinations.
+
+    A checked-out project can contain a symlink named .meridian.yaml (or its
+    backup) pointing at a file outside the project. Meridian must never read
+    through it for a tool response or write through it during spec accept.
+    """
+
+    def symlink(self, target: Path, link: Path) -> None:
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks are unavailable: {exc}")
+
+    def outside_file(self, name: str, content: str) -> Path:
+        directory = Path(tempfile.mkdtemp(prefix="meridian-outside-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        target = directory / name
+        target.write_text(content, encoding="utf-8")
+        return target
+
+    def test_spec_accept_refuses_a_symlinked_live_spec(self):
+        from meridian.analyzer.spec import write_spec
+
+        outside = self.outside_file("outside.txt", "DO NOT OVERWRITE\n")
+        link = self.tmp / ".meridian.yaml"
+        self.symlink(outside, link)
+
+        with self.assertRaises(SpecError):
+            write_spec(self.tmp, "version: 1\nmachines: []\n", force=True)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "DO NOT OVERWRITE\n")
+        self.assertTrue(link.is_symlink())
+
+    def test_spec_accept_refuses_a_symlinked_backup(self):
+        from meridian.analyzer.spec import write_spec
+
+        outside = self.outside_file("outside.txt", "DO NOT OVERWRITE\n")
+        target = self.tmp / ".meridian.yaml"
+        target.write_text("version: 1\nmachines: []\n", encoding="utf-8")
+        self.symlink(outside, self.tmp / ".meridian.yaml.bak")
+
+        with self.assertRaises(SpecError):
+            write_spec(self.tmp, "version: 1\nmachines: []\n", force=True)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "DO NOT OVERWRITE\n")
+
+    def test_cli_accept_refuses_a_symlinked_live_spec(self):
+        import argparse
+        from meridian import _cli_dispatch, _setup_cli
+
+        outside = self.outside_file("outside.txt", "DO NOT OVERWRITE\n")
+        self.symlink(outside, self.tmp / ".meridian.yaml")
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args(["spec", "accept", "--root", str(self.tmp)])
+        self.assertEqual(_cli_dispatch(args), 2)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "DO NOT OVERWRITE\n")
+
+    def test_spec_show_does_not_read_through_a_symlink(self):
+        import meridian.tools as tools_mod
+
+        outside = self.outside_file("outside.txt", "SECRET CONTENT\n")
+        self.symlink(outside, self.tmp / ".meridian.yaml")
+        original = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        try:
+            result = json.loads(tools_mod.meridian_spec({
+                "root": str(self.tmp), "action": "show"}))
+        finally:
+            tools_mod._agent_cwd = original
+        self.assertFalse(result["ok"])
+        self.assertNotIn("SECRET CONTENT", result.get("error", ""))
+
+    def test_load_spec_refuses_a_symlink(self):
+        outside = self.outside_file("outside.txt", "version: 1\nmachines: []\n")
+        link = self.tmp / ".meridian.yaml"
+        self.symlink(outside, link)
+        with self.assertRaises(SpecError):
+            load_spec(link)
+
+    def test_scanner_skips_symlinked_source_files(self):
+        outside = self.outside_file("outside.py", 'class Outside:\n    status = "secret"\n')
+        self.symlink(outside, self.tmp / "linked.py")
+        result = scan_root(self.tmp)
+        self.assertTrue(any("symlink skipped" in note for note in result.files_skipped))
+        self.assertNotIn("secret", {state for machine in result.machines for state in machine.states})
+
+    def test_report_refuses_a_symlinked_destination(self):
+        import meridian.tools as tools_mod
+
+        outside = self.outside_file("outside.txt", "DO NOT OVERWRITE\n")
+        self.symlink(outside, self.tmp / "report.md")
+        original = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        try:
+            result = json.loads(tools_mod.meridian_report({
+                "root": str(self.tmp), "out_file": "report.md"}))
+        finally:
+            tools_mod._agent_cwd = original
+        self.assertFalse(result["ok"])
+        self.assertEqual(outside.read_text(encoding="utf-8"), "DO NOT OVERWRITE\n")
+
+    def test_report_refuses_an_in_repo_symlinked_destination(self):
+        import meridian.tools as tools_mod
+
+        victim = self.write("victim.py", "KEEP = True\n")
+        self.symlink(victim, self.tmp / "report.md")
+        original = tools_mod._agent_cwd
+        tools_mod._agent_cwd = lambda: self.tmp
+        try:
+            result = json.loads(tools_mod.meridian_report({
+                "root": str(self.tmp), "out_file": "report.md"}))
+        finally:
+            tools_mod._agent_cwd = original
+        self.assertFalse(result["ok"])
+        self.assertEqual(victim.read_text(encoding="utf-8"), "KEEP = True\n")
+        self.assertTrue((self.tmp / "report.md").is_symlink())
+
+    def test_cli_report_refuses_an_in_repo_symlinked_destination(self):
+        import argparse
+        from meridian import _cli_dispatch, _setup_cli
+
+        victim = self.write("victim.py", "KEEP = True\n")
+        self.symlink(victim, self.tmp / "report.md")
+        parser = argparse.ArgumentParser()
+        _setup_cli(parser)
+        args = parser.parse_args([
+            "report", "--root", str(self.tmp), "--out", "report.md"])
+        self.assertEqual(_cli_dispatch(args), 2)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "KEEP = True\n")
+
+    def test_report_scans_the_repository_only_once(self):
+        import meridian.tools as tools_mod
+
+        original = tools_mod._agent_cwd
+        original_scan = tools_mod.scan_root
+        calls = []
+
+        def counted_scan(*args, **kwargs):
+            calls.append(args)
+            return original_scan(*args, **kwargs)
+
+        tools_mod._agent_cwd = lambda: self.tmp
+        tools_mod.scan_root = counted_scan
+        try:
+            result = json.loads(tools_mod.meridian_report({"root": str(self.tmp)}))
+        finally:
+            tools_mod._agent_cwd = original
+            tools_mod.scan_root = original_scan
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(calls), 1)
+
+    def test_ledger_refuses_a_symlinked_log(self):
+        outside = self.outside_file("ledger.txt", "DO NOT OVERWRITE\n")
+        path = ledger.ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.symlink(outside, path)
+        with self.assertRaises(ledger.LedgerError):
+            ledger.append("scan", {"root": str(self.tmp)})
+        self.assertEqual(outside.read_text(encoding="utf-8"), "DO NOT OVERWRITE\n")
+
+    def test_ledger_refuses_a_symlinked_lock(self):
+        outside = self.outside_file("ledger.lock", "DO NOT MODIFY\n")
+        path = ledger.ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_suffix(path.suffix + ".lock")
+        self.symlink(outside, lock_path)
+        with self.assertRaises(ledger.LedgerError):
+            ledger.append("scan", {"root": str(self.tmp)})
+        self.assertEqual(outside.read_text(encoding="utf-8"), "DO NOT MODIFY\n")
+
+    def test_ledger_refuses_a_hardlinked_log(self):
+        path = ledger.ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        outside = self.outside_file("ledger-copy.jsonl", "")
+        try:
+            os.link(outside, path)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hard links are unavailable: {exc}")
+        with self.assertRaises(ledger.LedgerError):
+            ledger.append("scan", {"root": str(self.tmp)})
+        self.assertEqual(outside.read_text(encoding="utf-8"), "")
+
+    def test_ledger_repair_keeps_private_file_permissions(self):
+        path = ledger.ledger_path()
+        ledger.append("scan", {"root": str(self.tmp)})
+        raw = path.read_text(encoding="utf-8")
+        path.write_text(raw + '{"torn":', encoding="utf-8")
+        result = ledger.repair()
+        self.assertTrue(result["ok"])
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class RobustnessTests(TempRepoTest):
+    """Regression coverage for concurrency and failure handling."""
+
+    def test_conflicting_enum_names_are_not_resolved_to_the_last_definition(self):
+        self.write("a.py", """
+        from enum import Enum
+        class Status(Enum):
+            PENDING = "pending"
+        class O:
+            def __init__(self):
+                self.status = Status.PENDING
+        """)
+        self.write("b.py", """
+        from enum import Enum
+        class Status(Enum):
+            PENDING = "different"
+        """)
+        result = scan_root(self.tmp)
+        states = {state for machine in result.machines for state in machine.states}
+        self.assertNotIn("different", states)
+        self.assertNotIn("pending", states)
+        self.assertTrue(any("conflicting definitions" in warning
+                            for warning in result.warnings))
+
+    def test_spec_rejects_non_integer_version(self):
+        path = self.tmp / "bad.yaml"
+        path.write_text("version: 1.5\nmachines: []\n", encoding="utf-8")
+        with self.assertRaises(SpecError):
+            load_spec(path)
+
+    def test_spec_rejects_non_string_states(self):
+        path = self.tmp / "bad.yaml"
+        path.write_text(
+            "version: 1\nmachines:\n  - id: \"O.status\"\n    states: [1]\n",
+            encoding="utf-8")
+        with self.assertRaises(SpecError):
+            load_spec(path)
+
+    def test_ledger_reports_non_object_json_as_corrupt(self):
+        path = ledger.ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]\n", encoding="utf-8")
+        status = ledger.verify()
+        self.assertFalse(status["ok"])
+        self.assertTrue(status["problems"])
+
+    def test_ledger_rejects_a_boolean_sequence_number(self):
+        path = ledger.ledger_path()
+        ledger.append("scan", {"root": str(self.tmp)})
+        entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+        entry["seq"] = True
+        entry["hash"] = ledger._hash_entry(entry)
+        path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+        status = ledger.verify()
+        self.assertFalse(status["ok"])
+        self.assertTrue(any("seq must be an integer" in problem
+                            for problem in status["problems"]))
+
+    def test_concurrent_appends_keep_one_valid_chain(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def append_one(index):
+            return ledger.append("scan", {"index": index})
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(append_one, range(20)))
+        entries = ledger.read_entries()
+        self.assertEqual(len(entries), 20)
+        self.assertEqual([entry["seq"] for entry in entries], list(range(1, 21)))
+        self.assertTrue(ledger.verify()["ok"])
+
+    def test_hook_scans_a_governed_repo_once_for_multiple_edits(self):
+        import meridian
+
+        project = self.tmp / "project"
+        project.mkdir()
+        source = (
+            'class O:\n'
+            '    def __init__(self):\n'
+            '        self.status = "draft"\n'
+            '    def go(self):\n'
+            '        if self.status == "draft":\n'
+            '            self.status = "done"\n'
+        )
+        (project / "a.py").write_text(source, encoding="utf-8")
+        (project / "b.py").write_text(source, encoding="utf-8")
+        (project / ".meridian.yaml").write_text(
+            'version: 1\n'
+            'machines:\n'
+            '  - id: "O.status"\n'
+            '    states: ["draft", "done"]\n'
+            '    initial: ["draft"]\n'
+            '    deny:\n'
+            '      - ["draft", "done"]\n',
+            encoding="utf-8")
+
+        original_walk = meridian.repo_mod.walk_source_files
+        calls = []
+
+        def counted_walk(*args, **kwargs):
+            calls.append(args)
+            return original_walk(*args, **kwargs)
+
+        meridian.repo_mod.walk_source_files = counted_walk
+        try:
+            meridian._on_post_tool_call(
+                "write_file",
+                {"paths": [str(project / "a.py"), str(project / "b.py")]},
+                "ok", session_id="session-1")
+        finally:
+            meridian.repo_mod.walk_source_files = original_walk
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

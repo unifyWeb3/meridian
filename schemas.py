@@ -136,13 +136,14 @@ MERIDIAN_LEDGER = {
     "name": "meridian_ledger",
     "description": (
         "Inspect or verify the evidence ledger: an append-only, SHA-256 "
-        "hash-chained audit of every scan, verdict, spec acceptance and check "
+        "hash-chained audit of the scan, verify, spec and report events "
         "Meridian performed. 'verify' recomputes the chain and reports the first "
         "broken entry if anybody quietly edited history; 'show' lists recent "
         "entries; 'stats' shows event counts; 'repair' drops a torn/corrupt "
         "tail, keeps the valid prefix and keeps a backup (needed only after a "
-        "crash mid-write). The ledger records machine ids, "
-        "verdict counts and file:line anchors - never file contents."
+        "crash mid-write). The ledger records event names, machine ids, "
+        "aggregate counts and repository/spec/report paths - never verdicts, "
+        "file:line anchors or file contents."
     ),
     "parameters": {
         "type": "object",

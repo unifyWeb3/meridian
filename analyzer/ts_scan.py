@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from .model import Machine, Transition
-from .repo import relpath
+from . import repo as repo_mod
 
 _NAME = r"[A-Za-z_$][\w$]*"
 _LIT = r"[\"'`][a-zA-Z][a-zA-Z0-9_-]{0,39}[\"'`]"
@@ -72,9 +72,9 @@ def scan_typescript(ts_files: list[Path], root: Path) -> tuple[list[Machine], li
         return machines[machine_id]
 
     for path in ts_files:
-        rel = relpath(path, root)
+        rel = repo_mod.relpath(path, root)
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = repo_mod.read_text(path, errors="replace")
         except OSError as exc:
             warnings.append(f"{rel}: unreadable ({exc})")
             continue
